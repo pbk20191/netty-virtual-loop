@@ -35,10 +35,22 @@ class JfrEventsTest {
             "io.github.pbk20191.virtualloop.IoEventHandled",
             "io.github.pbk20191.virtualloop.PeriodicRound",
             "io.github.pbk20191.virtualloop.LoopShutdown",
+            "io.github.pbk20191.virtualloop.LoopStats",
         )
+        // JDK limitation (see PeriodicStats): a periodic hook added while a recording is already
+        // running never activates for it, so the library must be "loaded" (hook registered)
+        // BEFORE the recording starts - the supported real-world order.
+        PeriodicStats.ensureRegistered()
+
         val dump = Files.createTempFile("virtualloop-jfr", ".jfr")
         val recording = Recording()
-        names.forEach { recording.enable(it) }
+        names.forEach { name ->
+            val settings = recording.enable(name)
+            if (name.endsWith("LoopStats")) {
+                // periodic event: shrink the default 1s period so the short test window sees it
+                settings.withPeriod(java.time.Duration.ofMillis(50))
+            }
+        }
         recording.start()
 
         try {

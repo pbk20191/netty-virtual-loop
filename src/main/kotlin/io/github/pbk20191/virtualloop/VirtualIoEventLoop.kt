@@ -160,6 +160,10 @@ class VirtualIoEventLoop(
     /** Live registrations' handles, retained so shutdown can close the loop's own channels. */
     private val liveHandles = ConcurrentHashMap.newKeySet<DelegatedHandle>()
 
+    init {
+        PeriodicStats.ensureRegistered()
+    }
+
     override fun execute(command: Runnable) {
         try {
             executor.execute(command)

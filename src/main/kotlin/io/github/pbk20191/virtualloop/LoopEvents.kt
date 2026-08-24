@@ -70,6 +70,65 @@ internal class PeriodicRound : Event() {
     companion object { @JvmField val INSTANCE = PeriodicRound() }
 }
 
+/**
+ * Periodic snapshot of the [VirtualLoopStats] counters (cumulative; delta them on the JMC
+ * timeline). Values are only live while `-Dvirtualloop.stats=true` (the default) keeps the
+ * counters incrementing; [statsEnabled] records that so a flat-zero recording is explainable.
+ */
+@Name("io.github.pbk20191.virtualloop.LoopStats")
+@Label("Loop Scheduler Stats")
+@Category("Netty Virtual Loop")
+@StackTrace(false)
+@Enabled(false)
+@jdk.jfr.Period("1 s")
+internal class LoopStats : Event() {
+    @JvmField @Label("Inline continuations") var inline: Long = 0
+    @JvmField @Label("Queued continuations") var queued: Long = 0
+    @JvmField @Label("Intercepted continuations") var intercepted: Long = 0
+    @JvmField @Label("Same-carrier continuations") var sameCarrier: Long = 0
+    @JvmField @Label("Counters enabled") var statsEnabled: Boolean = false
+}
+
+/**
+ * One-time registration of the [LoopStats] periodic hook. addPeriodicEvent only appends to a
+ * static task list (no JFR engine start); the hook runs solely while a recording has the event
+ * enabled. Called from the loop constructor so registration happens iff the library is used.
+ *
+ * JDK LIMITATION (verified on 25.0.3): a periodic hook added while a recording is ALREADY
+ * running is not activated for that recording - periodic-task enablement is only evaluated on
+ * recording state transitions. Start (or restart) the recording after the first
+ * VirtualIoEventLoop exists to capture LoopStats.
+ */
+internal object PeriodicStats {
+    @Volatile
+    private var registered = false
+
+    fun ensureRegistered() {
+        if (registered) return
+        synchronized(this) {
+            if (registered) return
+            try {
+                // Explicit type registration: every other event registers itself when its
+                // companion INSTANCE is constructed, but LoopStats instances only exist inside
+                // the hook - without this, enable-by-name never matches and the hook stays off.
+                jdk.jfr.FlightRecorder.register(LoopStats::class.java)
+                jdk.jfr.FlightRecorder.addPeriodicEvent(LoopStats::class.java) {
+                    val e = LoopStats()
+                    e.inline = VirtualLoopStats.inlineContinuations.get()
+                    e.queued = VirtualLoopStats.queuedContinuations.get()
+                    e.intercepted = VirtualLoopStats.interceptedContinuations.get()
+                    e.sameCarrier = VirtualLoopStats.sameCarrierContinuations.get()
+                    e.statsEnabled = STATS_ENABLED
+                    e.commit()
+                }
+            } catch (_: Throwable) {
+                // JFR unavailable (stripped runtime): counters stay readable programmatically.
+            }
+            registered = true
+        }
+    }
+}
+
 /** Whole graceful-shutdown span: begin at the request, commit when terminationFuture completes. */
 @Name("io.github.pbk20191.virtualloop.LoopShutdown")
 @Label("Loop Shutdown")

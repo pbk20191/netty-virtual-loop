@@ -97,6 +97,11 @@ disabled hot-path cost is a single branch — pattern borrowed from Micronaut's 
 | `…virtualloop.IoEventHandled` | duration of one IO event through the wrapped IoHandle (pipeline execution on the drain VT) |
 | `…virtualloop.PeriodicRound` | duration + start lateness of each periodic-chain round |
 | `…virtualloop.LoopShutdown` | whole graceful-shutdown span; whether it escalated to shutdownNow |
+| `…virtualloop.LoopStats` | periodic (default 1s) snapshot of the VirtualLoopStats scheduler counters |
+
+`LoopStats` is a periodic-hook event; due to a JDK limitation (verified on 25.0.3), hooks
+registered while a recording is already running never activate for it — start the recording
+after the first loop exists.
 
 Enable at runtime, e.g.
 `jcmd <pid> JFR.start settings=none +io.github.pbk20191.virtualloop.ContinuationScheduled#enabled=true …`
