@@ -61,7 +61,11 @@ src/test/kotlin/io/github/pbk20191/virtualloop/   JUnit tests (./gradlew test)
 ├── OwnershipTest.kt                consume vs guest carrier lifecycle
 ├── ContractTest.kt                 invokeAll/invokeAny on VTs, in-task sync(), cancel(true)
 │                                   interrupt, periodic semantics, shutdown quiet period
+├── TlsEchoTest.kt                  TLSv1.3 handshake + echo through a 150ms-BLOCKING handler
+│                                   (SslHandler schedules its timeouts through our timer)
 └── WalkBenchTest.kt                measures the inEventLoop() disguise tiers on a loop VT
+
+Tests run with `-Dio.netty.leakDetection.level=paranoid`; ByteBuf leaks surface as LEAK errors.
 ```
 
 ## Run
@@ -88,7 +92,8 @@ src/test/kotlin/io/github/pbk20191/virtualloop/   JUnit tests (./gradlew test)
 - Carrier-pinning operations (file IO, JNI, DNS lookups) still stall the loop: Loom cannot park
   them and this scheduler has no compensation pool. Socket IO, sleeps, locks and monitors all park.
 - CPU-bound handler work hogs the carrier exactly as in stock Netty.
-- Verified by the test battery, not yet production-hardened (no soak/leak/TLS testing).
+- Verified by the test battery (incl. TLS and paranoid leak detection), not yet
+  production-hardened (no soak testing, no io_uring/epoll transport coverage).
 
 ## License
 

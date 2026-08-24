@@ -13,6 +13,9 @@ dependencies {
     testImplementation(kotlin("test"))
     // Source: https://mvnrepository.com/artifact/io.netty/netty-all
     implementation("io.netty:netty-all:4.2.16.Final")
+    // Self-signed test certificates for the TLS verification test (SelfSignedCertificate is
+    // deprecated and needs JDK internals; pkitesting is 4.2's supported replacement).
+    testImplementation("io.netty:netty-pkitesting:4.2.16.Final")
 }
 
 kotlin {
@@ -28,7 +31,11 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
-    jvmArgs("--add-opens=java.base/java.lang=ALL-UNNAMED")
+    jvmArgs(
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        // Track-and-report every ByteBuf: leak reports surface as "LEAK:" errors in test output.
+        "-Dio.netty.leakDetection.level=paranoid",
+    )
     testLogging {
         events("passed", "skipped", "failed")
         showStandardStreams = true
