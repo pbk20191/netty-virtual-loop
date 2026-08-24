@@ -77,3 +77,10 @@ tasks.register<JavaExec>("runBench") {
     classpath = sourceSets["main"].runtimeClasspath
 }
 
+
+tasks.register<JavaExec>("runAlloc") {
+    group = "application"
+    description = "Allocator cost profile: many VTs on one carrier vs stock FTL loop thread."
+    mainClass.set("io.github.pbk20191.virtualloop.bench.AllocBench")
+    classpath = sourceSets["main"].runtimeClasspath
+}

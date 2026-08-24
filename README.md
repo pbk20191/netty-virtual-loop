@@ -76,6 +76,7 @@ Tests run with `-Dio.netty.leakDetection.level=paranoid`; ByteBuf leaks surface 
 | `./gradlew runPingPong` / `runPingPongVanilla` | round-trip latency vs stock Netty |
 | `./gradlew runHandoff` | same-carrier submission fast path |
 | `./gradlew runBench` | inEventLoop() disguise overhead |
+| `./gradlew runAlloc` | allocator cost: many VTs on one carrier vs stock FTL loop thread |
 
 ## Flags
 
