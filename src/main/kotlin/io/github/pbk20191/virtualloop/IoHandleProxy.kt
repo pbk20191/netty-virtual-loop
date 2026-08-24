@@ -149,11 +149,36 @@ internal class DelegatedHandle(
         }
     }
 
+    /** Cached for the JFR event; avoids a per-event getClass().getSimpleName(). */
+    private val handleTypeName: String = actual.javaClass.simpleName
+
     override fun handle(registration: IoRegistration, ioEvent: IoEvent) {
         if (Thread.currentThread().isVirtual) {
-            actual.handle(registration, ioEvent)
+            if (IoEventHandled.INSTANCE.isEnabled()) {
+                dispatchRecorded(registration, ioEvent, direct = true)
+            } else {
+                actual.handle(registration, ioEvent)
+            }
         } else {
-            enqueueAndRun { actual.handle(registration, ioEvent) }
+            if (IoEventHandled.INSTANCE.isEnabled()) {
+                enqueueAndRun { dispatchRecorded(registration, ioEvent, direct = false) }
+            } else {
+                enqueueAndRun { actual.handle(registration, ioEvent) }
+            }
+        }
+    }
+
+    /** JFR-wrapped dispatch; the event is created ON the drain thread (begin/commit same thread). */
+    private fun dispatchRecorded(registration: IoRegistration, ioEvent: IoEvent, direct: Boolean) {
+        val ev = IoEventHandled()
+        ev.handleType = handleTypeName
+        ev.direct = direct
+        ev.begin()
+        try {
+            actual.handle(registration, ioEvent)
+        } finally {
+            ev.end()
+            ev.commit()
         }
     }
 

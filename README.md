@@ -85,6 +85,23 @@ Tests run with `-Dio.netty.leakDetection.level=paranoid`; ByteBuf leaks surface 
 | `virtualloop.disguise` | `true` | `inEventLoop()` answers "false" to Netty's dead-lock guard for loop VTs (plain `sync()` on channel futures works). Costs ~280ns per call via `getCallerClass`; disable and use `VtFutures` for ~1ns. |
 | `virtualloop.stats` | `true` | scheduler-path counters (two atomic increments per continuation) |
 
+## Observability (JFR)
+
+Five JFR events under category "Netty Virtual Loop" (all `@Enabled(false)` by default; the
+disabled hot-path cost is a single branch — pattern borrowed from Micronaut's loom carrier):
+
+| Event | What it records |
+|---|---|
+| `…virtualloop.ContinuationScheduled` | every continuation entering the scheduler: dispatch mode (1=intercepted, 2=inline, 3=same-carrier, 4=queued), submitter, hash |
+| `…virtualloop.ContinuationRun` | duration of one mounted stretch on the carrier; correlate with Scheduled via hash for schedule→run latency |
+| `…virtualloop.IoEventHandled` | duration of one IO event through the wrapped IoHandle (pipeline execution on the drain VT) |
+| `…virtualloop.PeriodicRound` | duration + start lateness of each periodic-chain round |
+| `…virtualloop.LoopShutdown` | whole graceful-shutdown span; whether it escalated to shutdownNow |
+
+Enable at runtime, e.g.
+`jcmd <pid> JFR.start settings=none +io.github.pbk20191.virtualloop.ContinuationScheduled#enabled=true …`
+or programmatically via `Recording.enable(name)`. Verified by `JfrEventsTest`.
+
 ## Known trade-offs
 
 - Rides JDK internals (`--add-opens`, the scheduler field, `runContinuation` stability) and Netty

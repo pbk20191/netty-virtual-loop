@@ -57,19 +57,44 @@ class VirtualIoEventLoop(
      */
     private val lastActivityNanos = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
 
-    private val scheduler = java.util.concurrent.Executor { continuation ->
+    private val scheduler = java.util.concurrent.Executor { raw ->
         // Opaque store: this is a heuristic timestamp for the shutdown quiet period - no ordering
         // is needed, and an opaque write skips the volatile store fence on weakly-ordered CPUs.
         lastActivityNanos.setOpaque(System.nanoTime())
+        // JFR (disabled by default): when recording, wrap the continuation so its mounted stretch
+        // becomes a ContinuationRun duration event, correlated to the ContinuationScheduled below
+        // via the identity hash. Cost when disabled: this one branch.
+        var continuation = raw
+        var scheduled: ContinuationScheduled? = null
+        if (ContinuationScheduled.INSTANCE.isEnabled()) {
+            val hash = System.identityHashCode(raw)
+            scheduled = ContinuationScheduled().also {
+                it.hash = hash
+                it.submitter = Thread.currentThread().name
+            }
+            continuation = Runnable {
+                val run = ContinuationRun()
+                run.begin()
+                try {
+                    raw.run()
+                } finally {
+                    run.end()
+                    run.hash = hash
+                    run.commit()
+                }
+            }
+        }
         // orElse(null) is rejected by ScopedValue; isBound alone is the single cheap lookup on the
         // common (unbound) path, and get() runs only when actually bound.
         if (CONTINUATION_INTERCEPTOR.isBound) {
             if (STATS_ENABLED) VirtualLoopStats.interceptedContinuations.incrementAndGet()
+            scheduled?.let { it.mode = 1; it.commit() }
             CONTINUATION_INTERCEPTOR.get().execute(continuation)
             return@Executor
         }
         if (INLINE_NEXT.orElse(false) && !Thread.currentThread().isVirtual) {
             if (STATS_ENABLED) VirtualLoopStats.inlineContinuations.incrementAndGet()
+            scheduled?.let { it.mode = 2; it.commit() }
             // Set by inline(..) (timer callbacks), which runs on the loop's platform thread and
             // hands off work synchronously - running the continuation directly skips the task-queue
             // hop and mounts the virtual thread on the thread that would carry it anyway. The
@@ -90,6 +115,7 @@ class VirtualIoEventLoop(
             val mountedOn = if (current.isVirtual) PrivateLoomSupport.carrierOf(current) else null
             if (mountedOn != null && carrier.isExecutorThread(mountedOn)) {
                 if (STATS_ENABLED) VirtualLoopStats.sameCarrierContinuations.incrementAndGet()
+                scheduled?.let { it.mode = 3; it.commit() }
                 try {
                     carrier.lazyExecute(continuation)
                 } catch (e: java.util.concurrent.RejectedExecutionException) {
@@ -100,6 +126,7 @@ class VirtualIoEventLoop(
             }
             if (STATS_ENABLED) VirtualLoopStats.queuedContinuations.incrementAndGet()
             try {
+                scheduled?.let { it.mode = 4; it.commit() }
                 carrier.execute(continuation)
             } catch (e: java.util.concurrent.RejectedExecutionException) {
                 if (!carrier.isShuttingDown) throw e
@@ -125,6 +152,10 @@ class VirtualIoEventLoop(
 //    private val cache = InternalThreadLocalMap()
     /** Set once shutdown begins; drives [isShuttingDown] independently of the executor's hard state. */
     private val shuttingDown = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Diagnostic only (JFR [LoopShutdown.forced]): did shutdown escalate to shutdownNow. */
+    @Volatile
+    private var shutdownForced = false
 
     /** Live registrations' handles, retained so shutdown can close the loop's own channels. */
     private val liveHandles = ConcurrentHashMap.newKeySet<DelegatedHandle>()
@@ -606,10 +637,22 @@ class VirtualIoEventLoop(
 
         private fun runOnce() {
             while (true) {
+                // JFR (disabled by default): one duration event per round, lateness = how far past
+                // the round's deadline the command actually started.
+                var round: PeriodicRound? = null
+                if (PeriodicRound.INSTANCE.isEnabled()) {
+                    round = PeriodicRound().also {
+                        it.fixedRate = fixedRate
+                        it.latenessNanos = nettyScheduler.ticker().nanoTime() - nextDeadlineNanos
+                        it.begin()
+                    }
+                }
                 // false = cancelled (before or during the round) or the round threw; both are
                 // terminal and already recorded by FutureTask - done() has notified
                 // listeners/CompletionStage.
-                if (!runAndReset()) {
+                val ran = runAndReset()
+                round?.let { it.end(); it.commit() }
+                if (!ran) {
                     return
                 }
                 val now = nettyScheduler.ticker().nanoTime()
@@ -686,6 +729,19 @@ class VirtualIoEventLoop(
         if (!shuttingDown.compareAndSet(false, true)) {
             return terminationFuture
         }
+        // JFR (disabled by default): one span for the whole graceful shutdown; committed by the
+        // terminationFuture listener so the duration covers quiet wait + termination watch.
+        if (LoopShutdown.INSTANCE.isEnabled()) {
+            val ev = LoopShutdown()
+            ev.quietMillis = unit.toMillis(quietPeriod)
+            ev.timeoutMillis = unit.toMillis(timeout)
+            ev.begin()
+            terminationFuture.addListener { _ ->
+                ev.end()
+                ev.forced = shutdownForced
+                ev.commit()
+            }
+        }
         val quietNanos = unit.toNanos(quietPeriod)
         val timeoutNanos = unit.toNanos(timeout)
         val start = System.nanoTime()
@@ -705,7 +761,7 @@ class VirtualIoEventLoop(
         }
         carrier.terminationFuture().addListener {
             if (!terminationFuture.isDone) {
-                executor.shutdownNow()
+                shutdownForced = true; executor.shutdownNow()
                 terminationFuture.trySuccess(Unit)
             }
         }
@@ -751,7 +807,7 @@ class VirtualIoEventLoop(
                 terminationFuture.trySuccess(Unit)
                 return
             }
-            executor.shutdownNow()
+            shutdownForced = true; executor.shutdownNow()
             awaitQuiescence(now + TimeUnit.SECONDS.toNanos(1), forced = true)
             return
         }
@@ -761,7 +817,7 @@ class VirtualIoEventLoop(
         } catch (_: Throwable) {
             // Carrier dying mid-watch: nothing left to poll from - force-finish, exactly like the
             // carrier-terminationFuture safety net would.
-            executor.shutdownNow()
+            shutdownForced = true; executor.shutdownNow()
             terminationFuture.trySuccess(Unit)
         }
     }
