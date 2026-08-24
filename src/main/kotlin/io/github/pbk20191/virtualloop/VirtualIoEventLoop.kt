@@ -152,11 +152,19 @@ class VirtualIoEventLoop(
         ScopedValue.where(INLINE_NEXT, true).run { execute(command) }
     }
 
+    override fun isSuspended(): Boolean {
+        return carrier.isSuspended
+    }
 
-
-
-
-
+    // Pure delegation is complete here: trySuspend is only a state CAS (STARTED -> SUSPENDING);
+    // the actual suspension decision happens later in the carrier's run loop via canSuspend(),
+    // which our structure satisfies correctly - live channels hold carrier registrations
+    // (numRegistrations > 0 blocks it), an armed SchedulerLoop timer blocks it via the scheduled
+    // deadline, and a suspension while task VTs are merely PARKED is transparent (their unpark
+    // goes through carrier.execute, which restarts a suspended loop).
+    override fun trySuspend(): Boolean {
+        return carrier.trySuspend()
+    }
 
     override fun <V> newPromise(): Promise<V> = BlockingPromise(this, carrier)
 
