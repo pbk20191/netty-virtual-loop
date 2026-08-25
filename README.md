@@ -30,6 +30,15 @@ Targets JDK 25+ **GA** (developed on 27-ea) — no `--enable-preview`. Netty 4.2
   (next round only after TRUE completion, not first park), and gives interruptible
   `cancel(true)` on Netty-compatible task futures.
 
+Two adoption tiers:
+
+1. **Full group replacement** (`VirtualIoEventLoopGroup`): every task and IO event on virtual
+   threads; maximum transparency for blocking-everywhere codebases.
+2. **Minimal invasion** (`VirtualEventExecutorGroup`): keep the vanilla group and mark only the
+   blocking handlers - `pipeline.addLast(virtualExecutorGroup, handler)`. The handler runs on a
+   serial drain virtual thread carried by the channel's own loop thread (auto-captured), may
+   block and `sync()` freely, and Netty's offload ordering contract is preserved.
+
 ## Layout
 
 ```
@@ -40,6 +49,8 @@ src/main/kotlin/io/github/pbk20191/virtualloop/
 ├── LoopRuntime.kt                  shared ScopedValues, StackWalker disguise, feature flags
 ├── LoopTimer.kt                    loop-owned timer (Scheduler + SchedulerLoop driver,
 │                                   carrier-confined) + one-shot scheduled future
+├── VirtualEventExecutor.kt         minimal-invasion tier: addLast(group, handler) offload lanes
+│                                   on loop-carried drain VTs (carrier auto-capture)
 ├── IoHandleProxy.kt                dynamic-proxy IoHandle wrapper: serial per-registration
 │                                   dispatch on a drain VT; registration cancel() hook
 ├── BlockingGuards.kt               promises/tasks whose dead-lock guard fires only when the
@@ -63,6 +74,8 @@ src/test/kotlin/io/github/pbk20191/virtualloop/   JUnit tests (./gradlew test)
 │                                   interrupt, periodic semantics, shutdown quiet period
 ├── TlsEchoTest.kt                  TLSv1.3 handshake + echo through a 150ms-BLOCKING handler
 │                                   (SslHandler schedules its timeouts through our timer)
+├── OffloadExecutorTest.kt          VANILLA group + addLast(offload, blockingHandler): loop-carried
+│                                   VT, ordering, in-handler sync(), per-lane timer, shutdown
 └── WalkBenchTest.kt                measures the inEventLoop() disguise tiers on a loop VT
 
 Tests run with `-Dio.netty.leakDetection.level=paranoid`; ByteBuf leaks surface as LEAK errors.

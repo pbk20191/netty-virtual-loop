@@ -4,6 +4,7 @@ import io.netty.channel.*
 import io.netty.util.concurrent.*
 import io.netty.util.concurrent.Future
 import io.netty.util.concurrent.ScheduledFuture
+import io.netty.util.internal.ThreadExecutorMap
 import java.util.Collections
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicReference
@@ -144,6 +145,7 @@ class VirtualIoEventLoop(
         val builder = Thread.ofVirtual().name("virtual-io-task-", 0)
         PrivateLoomSupport.setScheduler(builder, scheduler)
         builder.factory()
+            .let { ThreadExecutorMap.apply(it, this) }
     }
 
     /** Starts a fresh virtual thread (carried by [carrier]'s loop thread) per submitted task / IO event. */

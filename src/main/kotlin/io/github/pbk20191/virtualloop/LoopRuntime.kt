@@ -52,3 +52,24 @@ internal fun calledFromCheckDeadLock(): Boolean = STACK_WALKER.walk { frames ->
         f.methodName == "checkDeadLock" && PROMISE_FAMILY.get(f.declaringClass)
     }
 }
+
+/**
+ * Caller-class test for Netty's pipeline context (package-private, so matched by name and cached
+ * per class like [PROMISE_FAMILY]).
+ */
+internal val PIPELINE_CONTEXT: ClassValue<Boolean> = object : ClassValue<Boolean>() {
+    override fun computeValue(type: Class<*>): Boolean =
+        type.name == "io.netty.channel.AbstractChannelHandlerContext"
+}
+
+/**
+ * Whether the (no-arg) inEventLoop call was made by Netty 4.2's
+ * AbstractChannelHandlerContext.ensurePromiseUseCorrectExecutor - the promise-replacement check
+ * on every outbound op. VirtualEventExecutor must answer it differently from pipeline DISPATCH
+ * calls that come from the very same class (see its inEventLoop for why).
+ */
+internal fun calledFromEnsurePromiseExecutor(): Boolean = STACK_WALKER.walk { frames ->
+    frames.skip(2).limit(3).anyMatch { f ->
+        f.methodName == "ensurePromiseUseCorrectExecutor"
+    }
+}

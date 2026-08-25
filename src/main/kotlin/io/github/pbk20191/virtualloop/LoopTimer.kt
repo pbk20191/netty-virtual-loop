@@ -43,7 +43,7 @@ internal abstract class AbstractScheduler(parent: EventExecutorGroup? = null): A
     
     
 }
-internal class Scheduler(private val actual: IoEventLoop, private val carrier: ThreadAwareExecutor): AbstractScheduler(actual) {
+internal class Scheduler(private val actual: EventExecutor, private val carrier: ThreadAwareExecutor): AbstractScheduler(actual) {
 
     val scopedValue = ScopedValue.newInstance<Boolean>()
 
@@ -119,7 +119,9 @@ internal class Scheduler(private val actual: IoEventLoop, private val carrier: T
  */
 internal class SchedulerLoop(
     val scheduler: Scheduler,
-    val carrier: SingleThreadIoEventLoop,
+    // Any executor with a timer works as the driver's clock source; the loop passes its
+    // SingleThreadIoEventLoop carrier, VirtualEventExecutor passes its captured channel loop.
+    val carrier: EventExecutor,
 ): Runnable {
     private val scope = ScopedValue.where(scheduler.scopedValue, true)
 
