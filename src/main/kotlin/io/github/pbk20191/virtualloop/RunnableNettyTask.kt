@@ -4,6 +4,7 @@ import io.netty.util.concurrent.BlockingOperationException
 import io.netty.util.concurrent.DefaultPromise
 import io.netty.util.concurrent.EventExecutor
 import io.netty.util.concurrent.GenericFutureListener
+import io.netty.util.concurrent.GenericProgressiveFutureListener
 import io.netty.util.concurrent.ImmediateEventExecutor
 import io.netty.util.concurrent.ProgressiveFuture
 import io.netty.util.concurrent.ThreadAwareExecutor
@@ -287,4 +288,43 @@ open class RunnableNettyTask<V> private constructor(
 
     override fun awaitUninterruptibly(timeoutMillis: Long): Boolean =
         await0(timeoutMillis, TimeUnit.MILLISECONDS, false)
+
+    fun tryUpdateProgress(progress: Long, total: Long): Boolean {
+        // DefaultProgressivePromise contract: total < 0 means "unknown total" (progress just has to
+        // be non-negative); otherwise 0 <= progress <= total. No progress after completion.
+        if (total < 0) {
+            if (progress < 0 || isDone) {
+                return false
+            }
+        } else if (progress !in 0..total || isDone) {
+            return false
+        }
+        val snapshot = lock.withLock { list.filterIsInstance<GenericProgressiveFutureListener<*>>() }
+        if (snapshot.isEmpty()) {
+            return true
+        }
+        // Same dispatch rule as completion (NettyListenerSupport.notifyOne): notify inline only
+        // when already on the notify executor, else hand off - so progressive listeners keep the
+        // project invariant of never running on the raw carrier platform thread even when
+        // progress is reported from a carrier-side timer runnable.
+        if (executor.inEventLoop()) {
+            fireProgress(snapshot, progress, total)
+        } else {
+            executor.execute { fireProgress(snapshot, progress, total) }
+        }
+        return true
+    }
+
+    private fun fireProgress(listeners: List<GenericProgressiveFutureListener<*>>, progress: Long, total: Long) {
+        for (listener in listeners) {
+            try {
+                @Suppress("UNCHECKED_CAST")
+                (listener as GenericProgressiveFutureListener<ProgressiveFuture<V>>)
+                    .operationProgressed(this, progress, total)
+            } catch (t: Throwable) {
+                val self = Thread.currentThread()
+                self.uncaughtExceptionHandler.uncaughtException(self, t)
+            }
+        }
+    }
 }
