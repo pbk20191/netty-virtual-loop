@@ -12,6 +12,8 @@ import io.netty.channel.nio.NioIoHandler
 import io.netty.channel.socket.SocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.channel.socket.nio.NioSocketChannel
+import io.netty.util.concurrent.EventExecutor
+import io.netty.util.concurrent.EventExecutorGroup
 import java.net.InetSocketAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -52,7 +54,7 @@ class OffloadExecutorTest {
                 .channel(NioServerSocketChannel::class.java)
                 .childHandler(object : ChannelInitializer<SocketChannel>() {
                     override fun initChannel(ch: SocketChannel) {
-                        ch.pipeline().addLast(offload, object : ChannelInboundHandlerAdapter() {
+                        ch.pipeline().addLast(offload, "inbound", object : ChannelInboundHandlerAdapter() {
                             override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
                                 val text = (msg as ByteBuf).toString(Charsets.UTF_8)
                                 msg.release()
@@ -77,7 +79,9 @@ class OffloadExecutorTest {
                                 ctx.writeAndFlush(Unpooled.copiedBuffer(text, Charsets.UTF_8)).sync()
                                 // executor timer contract: callback runs ON this executor
                                 val ex = ctx.executor()
-                                ex.schedule({ scheduledOnDrain.compareAndSet(null, ex.inEventLoop()) }, 10, TimeUnit.MILLISECONDS)
+                                ex.schedule({
+                                    scheduledOnDrain.compareAndSet(null, ex.inEventLoop())
+                                }, 10, TimeUnit.MILLISECONDS)
                                 if (isA) {
                                     inFlight.decrementAndGet()
                                     // TCP may coalesce A's three 1-byte writes into one read:
@@ -94,7 +98,7 @@ class OffloadExecutorTest {
             // Client A: sends 3 payloads back-to-back into the BLOCKING handler
             val echoedA = StringBuilder()
             val doneA = CountDownLatch(1)
-            val clientA = newClient(vanilla, port, echoedA, doneA, expect = 3)
+            val clientA = newClient(vanilla, offload, port, echoedA, doneA, expect = 3)
             "abc".forEach { c ->
                 clientA.writeAndFlush(Unpooled.copiedBuffer(c.toString(), Charsets.UTF_8))
             }
@@ -103,7 +107,7 @@ class OffloadExecutorTest {
             // vanilla loop thread is NOT blocked by A's sleeping handler.
             val echoedB = StringBuilder()
             val doneB = CountDownLatch(1)
-            val clientB = newClient(vanilla, port, echoedB, doneB, expect = 1)
+            val clientB = newClient(vanilla, offload, port, echoedB, doneB, expect = 1)
             val bStart = System.nanoTime()
             clientB.writeAndFlush(Unpooled.copiedBuffer("B", Charsets.UTF_8))
             check(doneB.await(10, TimeUnit.SECONDS)) { "client B echo missing" }
@@ -138,6 +142,7 @@ class OffloadExecutorTest {
 
     private fun newClient(
         group: MultiThreadIoEventLoopGroup,
+        offload: EventExecutorGroup,
         port: Int,
         sink: StringBuilder,
         done: CountDownLatch,
@@ -148,7 +153,7 @@ class OffloadExecutorTest {
             .channel(NioSocketChannel::class.java)
             .handler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
-                    ch.pipeline().addLast(object : ChannelInboundHandlerAdapter() {
+                    ch.pipeline().addLast(offload, "inbound", object : ChannelInboundHandlerAdapter() {
                         override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
                             val buf = msg as ByteBuf
                             synchronized(sink) {

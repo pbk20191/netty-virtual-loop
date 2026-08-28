@@ -14,8 +14,8 @@ import java.util.concurrent.Executor
 internal val INLINE_NEXT: ScopedValue<Boolean> = ScopedValue.newInstance()
 
 /** RETAIN_CLASS_REFERENCE so frames expose the real declaring Class for an exact match. */
-internal val STACK_WALKER: StackWalker = StackWalker.getInstance(setOf(StackWalker.Option.RETAIN_CLASS_REFERENCE),5)
-
+internal val CLASS_WALKER: StackWalker = StackWalker.getInstance(setOf(StackWalker.Option.RETAIN_CLASS_REFERENCE, StackWalker.Option.DROP_METHOD_INFO),1)
+private val STACK_WALKER: StackWalker = StackWalker.getInstance(setOf(StackWalker.Option.RETAIN_CLASS_REFERENCE),5)
 /** Cached per-class "is a DefaultPromise subtype" test for the tier-1 caller pre-filter. */
 internal object PROMISE_FAMILY:  ClassValue<Boolean>() {
     override fun computeValue(type: Class<*>): Boolean =

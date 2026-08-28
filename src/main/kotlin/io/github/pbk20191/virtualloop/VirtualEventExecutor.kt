@@ -136,7 +136,7 @@ class VirtualEventExecutor internal constructor(
         val carrier = capturedCarrier
         if (carrier == null) {
             // Uncaptured fallback lane (first submit was not from a Netty executor thread).
-            ForkJoinPool.commonPool().execute(continuation)
+            (PrivateLoomSupport.defaultCarrierScheduler ?: ForkJoinPool.commonPool()).execute(continuation)
             return@Executor
         }
         // Same-carrier fast path, as in VirtualIoEventLoop's scheduler: a virtual thread mounted
@@ -152,7 +152,7 @@ class VirtualEventExecutor internal constructor(
         } catch (e: RejectedExecutionException) {
             if (!carrier.isShuttingDown && !shuttingDown) throw e
             // The loop died under us mid-park: losing carrier affinity beats freezing the drain.
-            ForkJoinPool.commonPool().execute(continuation)
+            (PrivateLoomSupport.defaultCarrierScheduler ?: ForkJoinPool.commonPool()).execute(continuation)
         }
     }
 
@@ -172,7 +172,11 @@ class VirtualEventExecutor internal constructor(
             // handlerAdded, so ThreadExecutorMap knows the loop. Capture BEFORE starting the
             // drain so its virtual thread is born with the right scheduler.
             val current = ThreadExecutorMap.currentExecutor()
-            if (current != null && current !== this) {
+            // Never capture ANOTHER lane as the carrier (the drain registers itself in
+            // ThreadExecutorMap, so a submission from lane A's drain would otherwise be captured
+            // by lane B): a lane's drain is a virtual thread, and a virtual thread cannot carry
+            // another virtual thread's continuations.
+            if (current != null && current !== this && current !is VirtualEventExecutor) {
                 capturedCarrier = current
             }
             startDrain()
@@ -209,23 +213,30 @@ class VirtualEventExecutor internal constructor(
         }
         val drain = builder.unstarted {
             drainThread = Thread.currentThread()
-            while (true) {
-                if (shuttingDown && taskQueue.isEmpty()) {
-                    break
-                }
-                val job = try {
-                    taskQueue.poll(100, TimeUnit.MILLISECONDS) ?: continue
-                } catch (_: InterruptedException) {
-                    continue // cancel(true) of an already-finished round, or shutdown nudge
-                }
-                if (job === WAKE) continue
-                try {
-                    job.run()
-                } catch (t: Throwable) {
-                    val self = Thread.currentThread()
-                    self.uncaughtExceptionHandler.uncaughtException(self, t)
-                }
-            }
+            ThreadExecutorMap.apply(
+                Runnable{
+                    FastThreadLocalThread.runWithFastThreadLocal {
+                        while (true) {
+                            if (shuttingDown && taskQueue.isEmpty()) {
+                                break
+                            }
+                            val job = try {
+                                taskQueue.poll(100, TimeUnit.MILLISECONDS) ?: continue
+                            } catch (_: InterruptedException) {
+                                continue // cancel(true) of an already-finished round, or shutdown nudge
+                            }
+                            if (job === WAKE) continue
+                            try {
+                                job.run()
+                            } catch (t: Throwable) {
+                                val self = Thread.currentThread()
+                                self.uncaughtExceptionHandler.uncaughtException(self, t)
+                            }
+                        }
+                    }
+                },
+                this
+            ).run()
             terminationPromise.trySuccess(Unit)
         }
         if (capturedCarrier != null) {
@@ -266,7 +277,7 @@ class VirtualEventExecutor internal constructor(
         if (!DISGUISE_ENABLED) {
             return member
         }
-        val caller = STACK_WALKER.callerClass
+        val caller = CLASS_WALKER.callerClass
         if (PIPELINE_CONTEXT.get(caller)) {
             if (!member && calledFromEnsurePromiseExecutor()) {
                 return capturedCarrier?.inEventLoop(current) ?: false

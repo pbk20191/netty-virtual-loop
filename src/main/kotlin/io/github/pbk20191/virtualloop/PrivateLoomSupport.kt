@@ -33,7 +33,7 @@ object PrivateLoomSupport {
     /** `java.lang.VirtualThread.carrierThread` — the platform thread currently carrying the VT. */
     private val carrierThreadField: Field?
 
-    private val defaultCarrierScheduler: ForkJoinPool?
+    val defaultCarrierScheduler: ForkJoinPool?
 
     private val defaultCarrierFactory: ForkJoinPool.ForkJoinWorkerThreadFactory?
 

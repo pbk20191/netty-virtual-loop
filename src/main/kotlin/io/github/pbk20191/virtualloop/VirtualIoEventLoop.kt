@@ -121,7 +121,7 @@ class VirtualIoEventLoop(
                     carrier.lazyExecute(continuation)
                 } catch (e: java.util.concurrent.RejectedExecutionException) {
                     if (!carrier.isShuttingDown) throw e
-                    ForkJoinPool.commonPool().execute(continuation)
+                    (PrivateLoomSupport.defaultCarrierScheduler ?: ForkJoinPool.commonPool()).execute(continuation)
                 }
                 return@Executor
             }
@@ -135,7 +135,7 @@ class VirtualIoEventLoop(
                 // park). Dropping the continuation would freeze the thread forever; during teardown
                 // losing single-thread affinity is preferable, so run it on GlobalEventExecutor's
                 // (platform) thread instead.
-                ForkJoinPool.commonPool().execute(continuation)
+                (PrivateLoomSupport.defaultCarrierScheduler ?: ForkJoinPool.commonPool()).execute(continuation)
             }
         }
     }
@@ -313,7 +313,7 @@ class VirtualIoEventLoop(
         // pipeline caller (AbstractChannelHandlerContext etc.) exits here with the truthful
         // membership answer (a hand-rolled skip/limit(1) walk measured ~2x worse than
         // getCallerClass). Family test cached per class via ClassValue.
-        val c = STACK_WALKER.callerClass
+        val c = CLASS_WALKER.callerClass
 
         if (!PROMISE_FAMILY.get(c)) {
             return member

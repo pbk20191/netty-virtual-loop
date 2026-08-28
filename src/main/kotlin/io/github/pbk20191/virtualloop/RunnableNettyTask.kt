@@ -42,20 +42,10 @@ import io.netty.util.concurrent.Future as NettyFuture
  *   defensive copy, so downstream code cannot complete the task from outside.
  */
 open class RunnableNettyTask<V> private constructor(
-    callable: Callable<V>,
+    callable: Callable< V>,
     private val completableFuture: CompletableFuture<V>,
-    completionStage: CompletionStage<V> = completableFuture.thenApply(asIs()),
+    completionStage: CompletionStage<V> = completableFuture.copy(),
 ) : FutureTask<V>(callable), ProgressiveFuture<V>, CompletionStage<V> by completionStage, RunnableNettyFuture<V> {
-
-    private data object AsIs : Function<Any?, Any?> {
-        override fun apply(t: Any?): Any? = t
-    }
-
-    private companion object {
-        @Suppress("UNCHECKED_CAST")
-        fun <V> asIs(): Function<V, V> = AsIs as Function<V, V>
-    }
-
 
     constructor(
         callable: Callable<V>,
@@ -73,7 +63,7 @@ open class RunnableNettyTask<V> private constructor(
     private val notifying = AtomicBoolean(false)
 
     /** Defensive copy: dependents can chain but never complete the task's own future. */
-    override fun toCompletableFuture(): CompletableFuture<V> = completableFuture.thenApply(asIs())
+    override fun toCompletableFuture(): CompletableFuture<V> = completableFuture.copy()
 
     override fun done() {
         // Invoked by FutureTask exactly once, on the completing thread (the task's virtual thread,

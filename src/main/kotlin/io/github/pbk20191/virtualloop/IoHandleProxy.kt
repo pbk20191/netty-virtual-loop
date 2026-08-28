@@ -33,9 +33,6 @@ internal class DelegatedHandle(
     // methods like selectableChannel()/registered(), so the parameter must be a nullable array -
     // a `vararg args: Any?` declaration NPEs on Kotlin's intrinsic null-check before any dispatch.
     //
-    // Dispatch is matched by name+arity rather than declaringClass: a transport sub-interface
-    // that redeclares close()/handle() would report ITS class as declaringClass and silently
-    // bypass the serial queue if we compared classes.
     override fun invoke(proxy: Any, method: Method, args: Array<out Any?>?): Any? {
         when (method.declaringClass) {
             Any::class.java -> return when (method.name) {
@@ -45,16 +42,22 @@ internal class DelegatedHandle(
                 "equals" -> proxy === args!![0]
                 else -> "DelegatedHandle($actual)"
             }
-
-            IoHandle::class.java -> return method.invoke(this,*(args ?: EMPTY_ARGS))
         }
-        when (method.name) {
-//                IoHandle::registered.name -> if (method.parameterCount == 0) return registered()
-//                IoHandle::unregistered.name -> if (method.parameterCount == 0) return unregistered()
-            IoHandle::close.name -> if (method.parameterCount == 0) return close()
-//                IoHandle::handle.name -> if (method.parameterCount == 2) {
-//                    return handle(args!![0] as IoRegistration, args[1] as IoEvent)
-//                }
+        // Lifecycle membership is decided by the per-class cache below: IoHandle's method
+        // signatures RESOLVED AGAINST the incoming Method's own declaringClass, so it is exact on
+        // parameter types (overloads from other interfaces never match) yet independent of WHERE
+        // the method was declared - the proxy may pass a Method from a redeclaring SUB-interface
+        // or from the FOREMOST unrelated interface in its list (`class X : Closeable, SomeHandle`
+        // yields close() with declaringClass=Closeable). Both verified by IoHandleProxyDispatchTest.
+        //
+        // Dispatch TRANSLATES to the canonical IoHandle-declared Method before invoking on the
+        // wrapper: DelegatedHandle only implements IoHandle, so invoking the incoming (possibly
+        // sub-interface- or Closeable-declared) Method on it would throw IllegalArgumentException.
+        // Routing every interface view of a lifecycle method through the wrapper is sound because
+        // a class has ONE implementation per signature.
+        val canonical = IoHandleProxyMethodCache.get(method.declaringClass)[method]
+        if (canonical != null) {
+            return canonical.invoke(this, *(args ?: EMPTY_ARGS))
         }
         return method.invoke(actual, *(args ?: EMPTY_ARGS))
     }
@@ -65,6 +68,31 @@ internal class DelegatedHandle(
         /** No-op job: wakes the parked drain thread so it re-checks the terminal flags. */
         val WAKE = Runnable { }
 
+
+        data object IoHandleProxyMethodCache : ClassValue<Map<Method, Method>>() {
+            /**
+             * IoHandle's lifecycle signatures resolved against [type] (the declaringClass of an
+             * incoming proxy Method). No IoHandle-subtype guard: a foreign interface view like
+             * Closeable still resolves close() and must route through the wrapper (lifetime flag);
+             * signatures the type lacks (e.g. an unrelated arity-2 handle overload) simply do not
+             * resolve and stay excluded.
+             */
+            override fun computeValue(type: Class<*>) =
+                IoHandle::class.java.methods.fold(mutableMapOf<Method, Method>()) { m, a ->
+                    try {
+                        val t = type.getMethod(a.name, *a.parameterTypes)
+                        m[t] = a
+                    } catch (_: NoSuchMethodException) {
+
+                    }
+                    m
+//                    try {
+//                        type.getMethod(m.name, *m.parameterTypes)
+//                    } catch (_: NoSuchMethodException) {
+//                        null
+//                    }
+                }.toMap()
+        }
     }
 
     /** Refreshes [continuationHolder] whenever the drain thread's unpark reaches the scheduler. */
