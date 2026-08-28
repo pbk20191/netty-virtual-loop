@@ -1,5 +1,8 @@
 package io.github.pbk20191.virtualloop
 
+import io.github.pbk20191.virtualloop.proxy.DelegatedHandle
+import io.github.pbk20191.virtualloop.proxy.DelegatedRegistration
+import io.github.pbk20191.virtualloop.proxy.InterfaceCache
 import io.netty.channel.*
 import io.netty.util.concurrent.*
 import io.netty.util.concurrent.Future
@@ -19,9 +22,9 @@ import java.util.concurrent.atomic.AtomicReference
  *    [carrier].execute, so every virtual thread is carried by the loop's platform thread; parking
  *    unmounts and frees the carrier. Same-carrier submissions take a wakeup-free lazyExecute path,
  *    and [CONTINUATION_INTERCEPTOR]/[INLINE_NEXT] (see LoopRuntime.kt) allow captured/inline mounts.
- *  - IoHandleProxy.kt: [DelegatedHandle] serializes each registration's IO events onto one
+ *  - DelegatedHandle.kt: [io.github.pbk20191.virtualloop.proxy.DelegatedHandle] serializes each registration's IO events onto one
  *    long-lived drain virtual thread (mounted INLINE on the carrier per event);
- *    [DelegatedRegistration] hooks cancel() as the drain's terminal signal.
+ *    [io.github.pbk20191.virtualloop.proxy.DelegatedRegistration] hooks cancel() as the drain's terminal signal.
  *  - LoopTimer.kt: the loop-owned timer ([Scheduler] + [SchedulerLoop] driver, carrier-confined)
  *    behind [schedule]/[scheduleAtFixedRate]/[scheduleWithFixedDelay]; periodics are the
  *    multi-step [PeriodicVirtualTask] chain (next round only after TRUE completion).
@@ -737,7 +740,7 @@ class VirtualIoEventLoop(
         }
         // JFR (disabled by default): one span for the whole graceful shutdown; committed by the
         // terminationFuture listener so the duration covers quiet wait + termination watch.
-        if (LoopShutdown.INSTANCE.isEnabled()) {
+        if (LoopShutdown.INSTANCE.isEnabled) {
             val ev = LoopShutdown()
             ev.quietMillis = unit.toMillis(quietPeriod)
             ev.timeoutMillis = unit.toMillis(timeout)
@@ -750,6 +753,9 @@ class VirtualIoEventLoop(
         }
         val quietNanos = unit.toNanos(quietPeriod)
         val timeoutNanos = unit.toNanos(timeout)
+        // System.nanoTime, NOT carrier.ticker(): the ticker is epoch-shifted (START_TIME-based),
+        // while quietWatch/awaitQuiescence/lastActivityNanos all measure on the System epoch -
+        // mixing them makes (now - start) enormous and voids the quiet period instantly.
         val start = System.nanoTime()
         try {
             carrier.execute {

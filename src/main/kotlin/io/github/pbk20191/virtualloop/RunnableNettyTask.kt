@@ -1,13 +1,11 @@
 package io.github.pbk20191.virtualloop
 
-import io.netty.util.concurrent.BlockingOperationException
 import io.netty.util.concurrent.DefaultPromise
 import io.netty.util.concurrent.EventExecutor
 import io.netty.util.concurrent.GenericFutureListener
 import io.netty.util.concurrent.GenericProgressiveFutureListener
 import io.netty.util.concurrent.ImmediateEventExecutor
 import io.netty.util.concurrent.ProgressiveFuture
-import io.netty.util.concurrent.ThreadAwareExecutor
 import java.util.concurrent.Callable
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
@@ -20,7 +18,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
-import java.util.function.Function
 import kotlin.concurrent.withLock
 import io.netty.util.concurrent.Future as NettyFuture
 

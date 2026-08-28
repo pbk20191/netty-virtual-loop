@@ -23,7 +23,7 @@ Two adoption tiers:
 1. **Full replacement** — `VirtualIoEventLoopGroup` wraps a `MultiThreadIoEventLoopGroup`
    "carrier" 1:1 (`ownsCarrier`: consume vs guest lifecycles). `VirtualIoEventLoop` runs every
    task AND every dispatched IO event on fresh virtual threads; per-channel ordering comes from a
-   per-registration serial drain VT (`IoHandleProxy.kt`, dynamic Proxy over the IoHandle).
+   per-registration serial drain VT (`DelegatedHandle.kt`, dynamic Proxy over the IoHandle).
 2. **Minimal invasion** — `VirtualEventExecutorGroup` (`VirtualEventExecutor.kt`): keep a vanilla
    group, mark only blocking handlers via `pipeline.addLast(vtGroup, handler)`. One serial lane +
    drain VT per pipeline; the carrier is AUTO-CAPTURED from `ThreadExecutorMap.currentExecutor()`

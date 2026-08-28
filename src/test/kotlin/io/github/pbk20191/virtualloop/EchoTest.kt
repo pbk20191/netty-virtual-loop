@@ -29,7 +29,7 @@ class EchoTest {
         check(PrivateLoomSupport.isSupported) { "run with --add-opens=java.base/java.lang=ALL-UNNAMED" }
 
         val payload = "hello-from-loom-over-netty"
-        val group = VirtualIoEventLoopGroup(nThreads = 0)
+        val group = VirtualIoEventLoopGroup(nThreads = Runtime.getRuntime().availableProcessors())
         val handlerThread = AtomicReference<String>()
         val handlerVirtual = AtomicReference<Boolean>(false)
         var clientCloseFuture: io.netty.channel.ChannelFuture? = null
@@ -89,7 +89,7 @@ class EchoTest {
                         })
                     }
                 })
-            val clientChannel = client.connect(InetSocketAddress("127.0.0.1", port)).sync().channel()
+            val clientChannel = client.connect(serverChannel.localAddress()).sync().channel()
             clientCloseFuture = clientChannel.closeFuture()
 
             val start = System.nanoTime()

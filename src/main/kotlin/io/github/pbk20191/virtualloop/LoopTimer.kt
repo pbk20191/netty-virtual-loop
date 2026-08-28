@@ -1,6 +1,5 @@
 package io.github.pbk20191.virtualloop
 
-import io.netty.channel.*
 import io.netty.util.concurrent.*
 import io.netty.util.concurrent.Future
 import io.netty.util.concurrent.ScheduledFuture
@@ -216,3 +215,5 @@ internal class OneShotScheduledFuture<V>(
     }
 
 }
+
+interface RunnableNettyFuture<V>: RunnableFuture<V>, Future<V>

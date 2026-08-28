@@ -1,5 +1,8 @@
 package io.github.pbk20191.virtualloop
 
+import io.github.pbk20191.virtualloop.proxy.AbstractInterfaceMethodMap
+import io.github.pbk20191.virtualloop.proxy.DelegatedHandle
+import io.github.pbk20191.virtualloop.proxy.InterfaceCache
 import io.netty.channel.IoEvent
 import io.netty.channel.IoHandle
 import io.netty.channel.IoRegistration
@@ -10,7 +13,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 
 /**
- * Pins the proxy dispatch rule of [DelegatedHandle]: lifecycle methods must route through the
+ * Pins the proxy dispatch rule of [io.github.pbk20191.virtualloop.proxy.DelegatedHandle]: lifecycle methods must route through the
  * WRAPPER (serial queue + closed/cancelled flags) even when the concrete handle implements a
  * SUB-interface that REDECLARES them. The JDK hands the InvocationHandler a [java.lang.reflect.Method]
  * resolved against the proxy's interface list - its declaringClass can be the sub-interface, so
@@ -76,5 +79,38 @@ class IoHandleProxyDispatchTest {
         check(delegated.closed) { "close() via Closeable view bypassed the wrapper: lifetime signal lost" }
 
         println("RESULT: redeclared/overloaded/foreign-view lifecycle dispatch all route correctly.")
+    }
+}
+
+/**
+ * Pins the covariance-awareness of [io.github.pbk20191.virtualloop.proxy.AbstractInterfaceMethodMap]: a sub-interface that NARROWS a
+ * return type compiles to two methods - the specific one and a synthetic BRIDGE with the original
+ * return type (what the proxy passes for supertype-view invocations). Both must map to the
+ * canonical method; getMethod-based resolution would only find the most-specific one.
+ */
+internal class InterfaceMethodMapVarianceTest {
+    interface Canon {
+        fun make(): Any
+    }
+
+    interface Narrowed : Canon {
+        override fun make(): String // covariant narrowing -> javac/kotlinc emits a bridge make():Object
+    }
+
+    internal object CanonMap : AbstractInterfaceMethodMap<Canon>() {
+        override val clazz: Class<out Canon> = Canon::class.java
+    }
+
+    @Test
+    fun bridgeAndSpecificMethodsBothMapToCanonical() {
+        val canonical = Canon::class.java.getMethod("make")
+        val mapped = CanonMap.get(Narrowed::class.java)
+        val makes = Narrowed::class.java.methods.filter { it.name == "make" }
+        println("Narrowed.make variants: " + makes.map { "${it.returnType.simpleName}${if (it.isBridge) " (bridge)" else ""}" })
+        check(makes.size == 2) { "expected specific+bridge, got $makes" }
+        makes.forEach { m ->
+            check(mapped[m] == canonical) { "variant $m not mapped to canonical" }
+        }
+        println("RESULT: covariant-return bridge and specific method both resolve to the canonical Method.")
     }
 }
