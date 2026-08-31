@@ -456,6 +456,28 @@ class VirtualEventExecutor internal constructor(
 
     override fun terminationFuture(): Future<*> = terminationPromise
 
+    // Same rationale as VirtualIoEventLoop.close(): the JDK ExecutorService.close() default would
+    // route through the deprecated 100ms shutdown(); and the lane's own drain thread cannot wait
+    // for itself.
+    override fun close() {
+        shutdownGracefully(2, 15, TimeUnit.SECONDS)
+        val current = Thread.currentThread()
+        if (inEventLoop(current) || (capturedCarrier?.inEventLoop(current) == true)) {
+            return
+        }
+        var interrupted = false
+        while (!terminationPromise.isDone) {
+            try {
+                terminationPromise.await()
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
+        }
+        if (interrupted) {
+            current.interrupt()
+        }
+    }
+
     @Deprecated("Deprecated in Netty")
     override fun shutdown() {
         shutdownGracefully(0, 100, TimeUnit.MILLISECONDS)

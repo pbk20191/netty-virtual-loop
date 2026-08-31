@@ -68,12 +68,33 @@ internal class DelegatedHandle(
         continuationHolder.get()?.run()
     }
 
-    override fun registered() {
-        if (Thread.currentThread().isVirtual) {
-            actual.registered()
-        } else {
-            enqueueAndRun { actual.registered() }
+    /** The drain virtual thread; set by the loop when the drain starts. */
+    @Volatile
+    var drainThread: Thread? = null
+
+    /**
+     * Uniform serialization rule for every proxied lifecycle call, by CALLER IDENTITY:
+     *  - the DRAIN itself (a drain job re-entering the proxy, e.g. a handler's channel.close()
+     *    reaching unsafe.close on the drain): run DIRECTLY - Netty's synchronous contract for
+     *    in-loop calls, and ordering is trivially preserved (we ARE the consumer);
+     *  - any OTHER virtual thread (a task VT closing the channel, a lane VT): ENQUEUE - stock
+     *    Netty marshals off-loop callers to the loop, so queueing behind pending events matches
+     *    stock semantics, and it closes the race where a foreign VT used to mutate the handle
+     *    while the drain was parked mid-event. The add's unpark wakes a take()-parked drain
+     *    through the queued scheduler path (a virtual thread cannot mount another one inline);
+     *  - a PLATFORM thread (the carrier dispatching events): [enqueueAndRun]'s inline mount.
+     */
+    private inline fun dispatchSerialized(crossinline call: () -> Unit) {
+        val current = Thread.currentThread()
+        when {
+            current === drainThread -> call()
+            current.isVirtual -> taskQueue.add(Runnable { call() })
+            else -> enqueueAndRun { call() }
         }
+    }
+
+    override fun registered() {
+        dispatchSerialized { actual.registered() }
     }
 
     // --- terminal lifecycle signals: they bound the drain virtual thread's lifetime ----------
@@ -83,10 +104,7 @@ internal class DelegatedHandle(
     //  - cancelled (unregistered) keeps a short grace window, because registration.close()
     //    produces "cancel -> unregistered -> close" in one cascade and the trailing close()
     //    job must still be caught.
-    // Flags are set BEFORE the enqueue so the drain observes them together with the job. The
-    // virtual-thread branches must also WAKE the parked drain (plain add; the unpark routes
-    // through the queued scheduler path - a virtual thread cannot mount another one inline),
-    // or it would idle in take() long after the terminal signal.
+    // Flags are set BEFORE the enqueue so the drain observes them together with the job.
 
     /** Set once close() was delivered - nothing can follow it. */
     @Volatile
@@ -104,40 +122,23 @@ internal class DelegatedHandle(
 
     override fun unregistered() {
         cancelled = true
-        if (Thread.currentThread().isVirtual) {
-            actual.unregistered()
-            taskQueue.add(WAKE)
-        } else {
-            enqueueAndRun { actual.unregistered() }
-        }
+        dispatchSerialized { actual.unregistered() }
     }
 
     override fun close() {
         closed = true
-        if (Thread.currentThread().isVirtual) {
-            actual.close()
-            taskQueue.add(WAKE)
-        } else {
-            enqueueAndRun { actual.close() }
-        }
+        dispatchSerialized { actual.close() }
     }
 
     /** Cached for the JFR event; avoids a per-event getClass().getSimpleName(). */
     private val handleTypeName: String = actual.javaClass.simpleName
 
     override fun handle(registration: IoRegistration, ioEvent: IoEvent) {
-        if (Thread.currentThread().isVirtual) {
-            if (IoEventHandled.INSTANCE.isEnabled) {
-                dispatchRecorded(registration, ioEvent, direct = true)
-            } else {
-                actual.handle(registration, ioEvent)
-            }
+        val direct = Thread.currentThread() === drainThread
+        if (IoEventHandled.INSTANCE.isEnabled) {
+            dispatchSerialized { dispatchRecorded(registration, ioEvent, direct) }
         } else {
-            if (IoEventHandled.INSTANCE.isEnabled) {
-                enqueueAndRun { dispatchRecorded(registration, ioEvent, direct = false) }
-            } else {
-                enqueueAndRun { actual.handle(registration, ioEvent) }
-            }
+            dispatchSerialized { actual.handle(registration, ioEvent) }
         }
     }
 

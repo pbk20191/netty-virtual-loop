@@ -61,16 +61,16 @@ class VirtualIoEventLoop(
      */
     private val lastActivityNanos = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
 
-    private val scheduler = java.util.concurrent.Executor { raw ->
+    private val scheduler = Executor { raw ->
         // Opaque store: this is a heuristic timestamp for the shutdown quiet period - no ordering
         // is needed, and an opaque write skips the volatile store fence on weakly-ordered CPUs.
-        lastActivityNanos.setOpaque(System.nanoTime())
+        lastActivityNanos.opaque = System.nanoTime()
         // JFR (disabled by default): when recording, wrap the continuation so its mounted stretch
         // becomes a ContinuationRun duration event, correlated to the ContinuationScheduled below
         // via the identity hash. Cost when disabled: this one branch.
         var continuation = raw
         var scheduled: ContinuationScheduled? = null
-        if (ContinuationScheduled.INSTANCE.isEnabled()) {
+        if (ContinuationScheduled.INSTANCE.isEnabled) {
             val hash = System.identityHashCode(raw)
             scheduled = ContinuationScheduled().also {
                 it.hash = hash
@@ -387,6 +387,9 @@ class VirtualIoEventLoop(
             }
         }
         val poll = Runnable {
+            // Identity for DelegatedHandle.dispatchSerialized: only THIS thread may run proxied
+            // lifecycle calls directly; every other caller is serialized through the queue.
+            delegate.drainThread = Thread.currentThread()
             val result = runCatching { innerPromise.get() }
                 .onSuccess {
                     // Run the already-queued registered() callback BEFORE completing the promise:
