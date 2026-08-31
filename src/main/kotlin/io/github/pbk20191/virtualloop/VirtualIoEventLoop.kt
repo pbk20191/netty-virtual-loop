@@ -402,33 +402,13 @@ class VirtualIoEventLoop(
             if (t != null) {
                 // This virtual thread runs FOR the registration's lifetime, bounded by the terminal
                 // signals (see the flags on DelegatedHandle): it parks in take() while the
-                // registration is live, switches to a bounded grace poll once CANCELLED (the
-                // trailing close() of Netty's "cancel -> unregistered -> close" cascade must still
-                // be caught), and after CLOSE drains the remainder non-blocking and exits
-                // immediately - close is a hard terminal, nothing can follow it. isValid is kept as
-                // a belt-and-braces companion to the cancelled flag.
+                // registration is live; CLOSE is a hard terminal (Netty delivers nothing after it -
+                // drain the remainder non-blocking and exit); CANCELLED (or !isValid, the
+                // belt-and-braces companion) ends with an EVENT-DRIVEN fence instead of a timed
+                // grace poll - see the terminal drain below.
                 liveHandles.add(delegate)
                 try {
-                    while (true) {
-                        val job = try {
-                            when {
-                                delegate.closed ->
-                                    jobList.poll() ?: break
-                                delegate.cancelled || !t.isValid ->
-                                    jobList.poll(1, TimeUnit.SECONDS) ?: break
-                                else ->
-                                    jobList.take()
-                            }
-                        } catch (_: InterruptedException) {
-                            // shutdownNow() interrupted us: run whatever is already queued
-                            // (including any pending unregistered()/close()) without blocking,
-                            // then exit - never abandon terminal jobs.
-                            while (true) {
-                                val tail = jobList.poll() ?: break
-                                runCatching { tail.run() }
-                            }
-                            break
-                        }
+                    val runJob = { job: Runnable ->
                         try {
                             job.run()
                         } catch (e: Throwable) {
@@ -436,6 +416,61 @@ class VirtualIoEventLoop(
                             // kill the drain thread - later jobs, including close(), still have to run.
                             val self = Thread.currentThread()
                             self.uncaughtExceptionHandler.uncaughtException(self, e)
+                        }
+                    }
+                    val drainQueued = {
+                        while (true) {
+                            runJob(jobList.poll() ?: break)
+                        }
+                    }
+                    var interrupted = false
+                    while (!delegate.closed && !delegate.cancelled && t.isValid) {
+                        val job = try {
+                            jobList.take()
+                        } catch (_: InterruptedException) {
+                            // shutdownNow() interrupted us: run whatever is already queued
+                            // (including any pending unregistered()/close()) without blocking,
+                            // then exit - never abandon terminal jobs.
+                            interrupted = true
+                            break
+                        }
+                        runJob(job)
+                    }
+                    if (interrupted || delegate.closed) {
+                        drainQueued()
+                    } else {
+                        // CANCELLED terminal: the trailing callbacks of Netty's
+                        // "cancel -> unregistered -> close" cascade are enqueued from the carrier's
+                        // CURRENT event-loop iteration (invokeLater hops included), so a tail task
+                        // (executeAfterEventLoopIteration) is a precise "nothing more can come"
+                        // fence - no arbitrary 1s grace, and a deregistered-then-moved channel
+                        // releases its drain within one iteration instead of a full second.
+                        // Fence UNTIL QUIESCENT (a round that ends with an empty queue): runAllTasks
+                        // may split a long batch across iterations under the ioRatio budget, so a
+                        // single fence can fire before a split cascade has fully landed.
+                        while (true) {
+                            drainQueued()
+                            val fence = CountDownLatch(1)
+                            try {
+                                carrier.executeAfterEventLoopIteration { fence.countDown() }
+                            } catch (_: Throwable) {
+                                // Carrier rejected (shutting down): no more iterations means no
+                                // more producers - drain what is there and exit.
+                                drainQueued()
+                                break
+                            }
+                            // Bounded await: if the carrier dies between accepting the tail task
+                            // and running it, the latch never opens - the old 1s grace remains as
+                            // the worst-case safety net only.
+                            val fenced = try {
+                                fence.await(1, TimeUnit.SECONDS)
+                            } catch (_: InterruptedException) {
+                                false
+                            }
+                            if (!fenced || jobList.isEmpty()) {
+                                drainQueued()
+                                break
+                            }
                         }
                     }
                 } finally {
@@ -860,7 +895,30 @@ class VirtualIoEventLoop(
     }
 
 
+    override fun <T> invokeAll(tasks: Collection<Callable<T>>): List<Future<T>> {
+        check(!carrier.inEventLoop())
+        return super.invokeAll(tasks) as List<Future<T>>
+    }
 
+
+    override fun <T> invokeAll(
+        tasks: Collection<Callable<T>>,
+        timeout: Long,
+        unit: TimeUnit
+    ): List<Future<T>> {
+        check(!carrier.inEventLoop())
+        return super.invokeAll(tasks, timeout, unit) as List<Future<T>>
+    }
+
+    override fun <T> invokeAny(tasks: Collection<Callable<T>>): T {
+        check(!carrier.inEventLoop())
+        return super.invokeAny(tasks)
+    }
+
+    override fun <T> invokeAny(tasks: Collection<Callable<T>>, timeout: Long, unit: TimeUnit): T {
+        check(!carrier.inEventLoop())
+        return super.invokeAny(tasks, timeout, unit)
+    }
 
 
 }
