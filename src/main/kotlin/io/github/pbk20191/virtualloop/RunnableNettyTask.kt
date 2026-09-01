@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.FutureTask
+import java.util.concurrent.RunnableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -43,7 +44,7 @@ open class RunnableNettyTask<V> private constructor(
     callable: Callable< V>,
     private val completableFuture: CompletableFuture<V>,
     completionStage: CompletionStage<V> = completableFuture.copy(),
-) : FutureTask<V>(callable), ProgressiveFuture<V>, CompletionStage<V> by completionStage, RunnableNettyFuture<V> {
+) : FutureTask<V>(callable), ProgressiveFuture<V>, CompletionStage<V> by completionStage, RunnableNettyFuture<V>, RunnableFuture<V> {
 
     constructor(
         callable: Callable<V>,

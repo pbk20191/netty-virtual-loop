@@ -24,7 +24,7 @@ internal abstract class AbstractInterfaceMethodMap<T> : ClassValue<Map<Method, M
     abstract val clazz: Class<out T>
 
     override fun computeValue(type: Class<*>): Map<Method, Method> {
-        val canonical = clazz.methods
+        val canonical = if (clazz.isInterface) clazz.methods.toList() else clazz.interfaces.flatMap { it.methods.toList() }
         val map = HashMap<Method, Method>()
         for (candidate in type.methods) {
             val match = canonical.firstOrNull {

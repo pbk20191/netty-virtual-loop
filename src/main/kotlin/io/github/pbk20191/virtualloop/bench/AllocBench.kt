@@ -58,26 +58,34 @@ object AllocBench {
         )
 
         val virtualGroup = VirtualIoEventLoopGroup(nThreads = 0)
+        val sharedGroup = VirtualIoEventLoopGroup(nThreads = 0, sharedFastThreadLocals = true)
         val vanillaGroup = MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory())
         try {
             val virtualLoop = virtualGroup.next()
+            val sharedLoop = sharedGroup.next()
             val vanillaLoop = vanillaGroup.next()
-            System.out.printf("%-28s %14s %14s%n", "allocator", "virtual ns/op", "vanilla ns/op")
+            System.out.printf("%-28s %14s %14s %14s%n", "allocator", "virtual ns/op", "sharedFTL ns/op", "vanilla ns/op")
             for ((name, alloc) in allocators) {
                 val virtualNs = onExecutor(alloc) { work -> // K parallel VTs, one carrier
                     val done = CountDownLatch(WORKERS)
                     repeat(WORKERS) { virtualLoop.execute { work(); done.countDown() } }
                     check(done.await(120, TimeUnit.SECONDS)) { "virtual mode timed out" }
                 }
+                val sharedNs = onExecutor(alloc) { work -> // K VTs sharing ONE InternalThreadLocalMap
+                    val done = CountDownLatch(WORKERS)
+                    repeat(WORKERS) { sharedLoop.execute { work(); done.countDown() } }
+                    check(done.await(120, TimeUnit.SECONDS)) { "shared mode timed out" }
+                }
                 val vanillaNs = onExecutor(alloc) { work -> // same total work, one FTL thread
                     val done = CountDownLatch(WORKERS)
                     repeat(WORKERS) { vanillaLoop.execute { work(); done.countDown() } }
                     check(done.await(120, TimeUnit.SECONDS)) { "vanilla mode timed out" }
                 }
-                System.out.printf("%-28s %11.1f ns %11.1f ns%n", name, virtualNs, vanillaNs)
+                System.out.printf("%-28s %11.1f ns %14.1f ns %11.1f ns%n", name, virtualNs, sharedNs, vanillaNs)
             }
         } finally {
             virtualGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS).await(5, TimeUnit.SECONDS)
+            sharedGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS).await(5, TimeUnit.SECONDS)
             vanillaGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS).await(5, TimeUnit.SECONDS)
         }
     }

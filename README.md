@@ -98,6 +98,28 @@ Tests run with `-Dio.netty.leakDetection.level=paranoid`; ByteBuf leaks surface 
 | `virtualloop.disguise` | `true` | `inEventLoop()` answers "false" to Netty's dead-lock guard for loop VTs (plain `sync()` on channel futures works). Costs ~280ns per call via `getCallerClass`; disable and use `VtFutures` for ~1ns. |
 | `virtualloop.stats` | `true` | scheduler-path counters (two atomic increments per continuation) |
 
+## Loop-scoped FastThreadLocal sharing (opt-in)
+
+`VirtualIoEventLoopGroup(nThreads, sharedFastThreadLocals = true)` gives every loop ONE shared
+`InternalThreadLocalMap`, injected into all of its virtual threads (tasks and drains alike).
+Safe by construction between loop threads - they are all carried by one platform thread, so map
+accesses are serialized by mounting. What it buys:
+
+- `ThreadExecutorMap.currentExecutor()` == the loop on every loop thread (stamped once into the
+  shared map), which opens `PooledByteBufAllocator`'s and `AdaptivePoolingAllocator`'s cache
+  gates - and because the backing storage IS the shared map, the resulting PoolThreadCache /
+  magazine group is genuinely shared by the whole loop (one cache per loop, not per thread).
+- `FastThreadLocal` state becomes loop-scoped instead of dying with each task virtual thread.
+- Cleanup runs exactly once at loop termination (`FastThreadLocal.removeAll` under the shared
+  map, firing every onRemoval hook).
+
+The sharp edge (why the default is off): borrow-semantics scratch such as
+`InternalThreadLocalMap.stringBuilder()` assumes nothing interleaves mid-borrow. Netty-internal
+borrows never park mid-use; user/third-party FastThreadLocal code that blocks while holding
+borrowed scratch would interleave with another loop thread. Measured cost is neutral-to-slightly
+positive (`runAlloc`); the residual ~15ns/alloc vs a stock FastThreadLocalThread is the JDK
+ThreadLocal slow-path lookup that any virtual-thread architecture pays.
+
 ## Observability (JFR)
 
 Five JFR events under category "Netty Virtual Loop" (all `@Enabled(false)` by default; the

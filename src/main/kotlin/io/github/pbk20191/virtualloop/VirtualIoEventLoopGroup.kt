@@ -33,22 +33,27 @@ class VirtualIoEventLoopGroup(
 
     private val carrier: MultiThreadIoEventLoopGroup,
     private val ownsCarrier: Boolean = true,
+    sharedFastThreadLocals: Boolean = false,
     counter: AtomicInteger = AtomicInteger(0),
     buffer: MutableList<IoEventLoop> = arrayListOf()
-) : MultithreadEventExecutorGroup(carrier.executorCount(), carrier, ChooserFactory(carrier), counter, buffer), IoEventLoopGroup {
+    // The flag rides the super-ctor varargs because newChild runs from the SUPER constructor,
+    // before any field of this class is assigned (same trap as the carrier field, see newChild).
+) : MultithreadEventExecutorGroup(carrier.executorCount(), carrier, ChooserFactory(carrier), counter, buffer, sharedFastThreadLocals), IoEventLoopGroup {
 
     constructor(
         nThreads: Int = 0,
         executor: Executor? = null,
         ioHandlerFactory: IoHandlerFactory = NioIoHandler.newFactory(),
         chooserFactory: EventExecutorChooserFactory,
-    ): this(MultiThreadIoEventLoopGroup(nThreads, executor, chooserFactory, ioHandlerFactory))
+        sharedFastThreadLocals: Boolean = false,
+    ): this(MultiThreadIoEventLoopGroup(nThreads, executor, chooserFactory, ioHandlerFactory), sharedFastThreadLocals = sharedFastThreadLocals)
 
     constructor(
         nThreads: Int = 0,
         threadFactory: ThreadFactory? = null,
         ioHandlerFactory: IoHandlerFactory = NioIoHandler.newFactory(),
-    ): this(MultiThreadIoEventLoopGroup(nThreads, threadFactory, ioHandlerFactory))
+        sharedFastThreadLocals: Boolean = false,
+    ): this(MultiThreadIoEventLoopGroup(nThreads, threadFactory, ioHandlerFactory), sharedFastThreadLocals = sharedFastThreadLocals)
 
     private class ChooserFactory(
         val carrier: IoEventLoopGroup
@@ -83,13 +88,14 @@ class VirtualIoEventLoopGroup(
 
         val counter = args[0] as AtomicInteger
         val buffer = args[1] as MutableList<IoEventLoop>
+        val sharedFastThreadLocals = args.getOrNull(2) as? Boolean ?: false
 
         val index = counter.getAndIncrement()
         if (index == 0) {
             buffer.addAll(carrier.iterator().asSequence().toList() as Collection<IoEventLoop>)
         }
         val single = buffer[index] as SingleThreadIoEventLoop
-        val loop = VirtualIoEventLoop(this, single)
+        val loop = VirtualIoEventLoop(this, single, sharedFastThreadLocals)
         return loop
     }
 

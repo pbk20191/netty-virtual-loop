@@ -176,7 +176,12 @@ class VirtualEventExecutor internal constructor(
             // ThreadExecutorMap, so a submission from lane A's drain would otherwise be captured
             // by lane B): a lane's drain is a virtual thread, and a virtual thread cannot carry
             // another virtual thread's continuations.
-            if (current != null && current !== this && current !is VirtualEventExecutor) {
+            // ...nor a VirtualIoEventLoop: in shared-FTL mode its loop threads answer
+            // currentExecutor() == the loop, and a lane carried by a per-task-VT executor would
+            // have virtual threads carrying virtual threads.
+            if (current != null && current !== this &&
+                current !is VirtualEventExecutor && current !is VirtualIoEventLoop
+            ) {
                 capturedCarrier = current
             }
             startDrain()

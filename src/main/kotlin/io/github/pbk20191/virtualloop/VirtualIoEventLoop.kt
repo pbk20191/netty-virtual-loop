@@ -7,6 +7,7 @@ import io.netty.channel.*
 import io.netty.util.concurrent.*
 import io.netty.util.concurrent.Future
 import io.netty.util.concurrent.ScheduledFuture
+import io.netty.util.internal.InternalThreadLocalMap
 import io.netty.util.internal.ThreadExecutorMap
 import java.util.Collections
 import java.util.concurrent.*
@@ -46,8 +47,13 @@ import java.util.concurrent.atomic.AtomicReference
 // guarded future behind this class's back again.
 class VirtualIoEventLoop(
     private val group: IoEventLoopGroup,
-    internal val carrier: SingleThreadIoEventLoop
+    internal val carrier: SingleThreadIoEventLoop,
+    sharedFastThreadLocals: Boolean = false,
 ) : AbstractExecutorService(), IoEventLoop {
+
+    /** Loop-level FastThreadLocal sharing (opt-in); see SharedFastThreadLocals.kt for the model. */
+    internal val ftlDomain: SharedFtlDomain? =
+        if (sharedFastThreadLocals && SharedFtlSupport.isSupported) SharedFtlDomain(this) else null
 
 
     private val terminationFuture: Promise<Unit> = DefaultPromise(GlobalEventExecutor.INSTANCE)
@@ -147,8 +153,28 @@ class VirtualIoEventLoop(
     private val threadFactory = run {
         val builder = Thread.ofVirtual().name("virtual-io-task-", 0)
         PrivateLoomSupport.setScheduler(builder, scheduler)
-        builder.factory()
-            .let { ThreadExecutorMap.apply(it, this) }
+        val raw = builder.factory()
+        val domain = ftlDomain
+        if (domain != null) {
+            // Shared-FTL mode: bind the loop's shared InternalThreadLocalMap as the first act of
+            // EVERY loop virtual thread. Deliberately NOT ThreadExecutorMap.apply here - the
+            // domain stamps currentExecutor ONCE into the shared map, and apply's finally would
+            // UNSET that shared slot at every task end, yanking it from under parked siblings.
+            java.util.concurrent.ThreadFactory { r ->
+                raw.newThread {
+                    domain.installOnCurrentThread()
+                    r.run()
+                }
+            }
+        } else {
+            // Task VTs stay UNREGISTERED in ThreadExecutorMap on purpose: currentExecutor() != null
+            // opens the allocators' per-THREAD cache gates, and a short-lived task VT would mint a
+            // private PoolThreadCache/magazine group for a handful of allocations and abandon it
+            // to the GC (no removeAll path) - pure churn. Long-lived DRAIN threads get the
+            // registration instead (see register()); loop-wide sharing is the
+            // sharedFastThreadLocals opt-in.
+            raw
+        }
     }
 
     /** Starts a fresh virtual thread (carried by [carrier]'s loop thread) per submitted task / IO event. */
@@ -167,6 +193,11 @@ class VirtualIoEventLoop(
 
     init {
         PeriodicStats.ensureRegistered()
+        ftlDomain?.let { domain ->
+            terminationFuture.addListener {
+                domain.cleanup(threadFactory)
+            }
+        }
     }
 
     override fun execute(command: Runnable) {
@@ -495,9 +526,31 @@ class VirtualIoEventLoop(
             // the drain exits. Short-lived task virtual threads are deliberately NOT wrapped: the
             // API is documented for "long-running" threads, and per-task caches would just churn.
             // (The 4.2 default adaptive allocator is FTL-agnostic either way.)
-            executor.execute {
-                FastThreadLocalThread.runWithFastThreadLocal(poll)
-            }
+            executor.execute(
+                if (ftlDomain != null) {
+                    Runnable {
+                        // Shared-FTL mode: the factory already installed the loop map.
+                        // runWithFastThreadLocal is FORBIDDEN here - its exit removeAll() would
+                        // wipe the SHARED map under every other loop thread. Register the drain in
+                        // the fallback set instead (Recycler's willCleanup gate) and unregister
+                        // WITHOUT removeAll; the map is cleaned once at loop termination.
+                        ftlDomain.registerDrain()
+                        try {
+                            poll.run()
+                        } finally {
+                            ftlDomain.unregisterDrain()
+                        }
+                    }
+                } else {
+                    // ThreadExecutorMap registration opens AdaptivePoolingAllocator's thread-local
+                    // magazine gate (currentExecutor() != null - the FastThreadLocal bridge alone
+                    // does not) and lets PooledByteBufAllocator schedule its cache trim on this
+                    // loop. Correct for the DRAIN only: it lives as long as the registration.
+                    Runnable {
+                        FastThreadLocalThread.runWithFastThreadLocal(ThreadExecutorMap.apply(poll, this))
+                    }
+                },
+            )
         }
         continuationHolder.get()?.let { carrier.execute(it) }
         return outerPromise
@@ -876,6 +929,32 @@ class VirtualIoEventLoop(
         return terminationFuture
     }
 
+    // Explicit AutoCloseable entry (try-with-resources / use{}). Without this the JDK 19+
+    // ExecutorService.close() default kicks in, which calls shutdown() - our deprecated override
+    // mapping to shutdownGracefully(0, 100ms) - silently TRUNCATING in-flight work at 100ms
+    // instead of the orderly wait the close() contract promises. Self-close guards: a loop
+    // virtual thread cannot wait for its own termination, and the CARRIER thread must never
+    // block here at all - termination progress runs on the carrier, so waiting on it would
+    // deadlock the whole loop forever. Both return with shutdown initiated asynchronously.
+    override fun close() {
+        shutdownGracefully(2, 15, TimeUnit.SECONDS)
+        val current = Thread.currentThread()
+        if (inEventLoop(current) || carrier.isExecutorThread(current)) {
+            return
+        }
+        var interrupted = false
+        while (!terminationFuture.isDone) {
+            try {
+                terminationFuture.await()
+            } catch (_: InterruptedException) {
+                interrupted = true // JDK close() contract: uninterruptible wait, restore the flag
+            }
+        }
+        if (interrupted) {
+            current.interrupt()
+        }
+    }
+
     @Deprecated("Deprecated in Netty")
     override fun shutdown() {
         shutdownGracefully(0, 100, TimeUnit.MILLISECONDS)
@@ -923,8 +1002,12 @@ class VirtualIoEventLoop(
         return super.invokeAny(tasks, timeout, unit)
     }
 
+    companion object {
+
+        /** Poll cadence of the shutdown termination watch (see [VirtualIoEventLoop.awaitQuiescence]). */
+        private val TERMINATION_POLL_NANOS = TimeUnit.MILLISECONDS.toNanos(10)
+
+    }
 
 }
 
-/** Poll cadence of the shutdown termination watch (see [VirtualIoEventLoop.awaitQuiescence]). */
-private val TERMINATION_POLL_NANOS = TimeUnit.MILLISECONDS.toNanos(10)

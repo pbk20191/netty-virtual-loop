@@ -6,7 +6,14 @@ internal class InterfaceCache: ClassValue<Array<Class<*>>>() {
 
     override fun computeValue(type: Class<*>): Array<Class<*>> {
         return generateSequence(type) { it.superclass }
-            .flatMap { it.interfaces.asSequence() }
+            .flatMap {
+                val array = it.interfaces
+                if (array.isEmpty() && it.isInterface) {
+                    listOf(it)
+                } else {
+                    array.asList()
+                }
+            }
             .distinct()
             .filter { !it.isHidden && !it.isSealed && Modifier.isPublic(it.modifiers) }
             .toList()
