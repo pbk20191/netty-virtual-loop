@@ -28,7 +28,7 @@ import kotlin.test.Test
 class JfrEventsTest {
     @Test
     fun allLoopEventsAreRecorded() {
-        check(PrivateLoomSupport.isSupported) { "run with --add-opens=java.base/java.lang=ALL-UNNAMED" }
+        check(PrivateLoomSupport.isSupported) { "Loom internals unavailable (opened-module and Unsafe strategies both failed)" }
         val names = listOf(
             "io.github.pbk20191.virtualloop.ContinuationScheduled",
             "io.github.pbk20191.virtualloop.ContinuationRun",

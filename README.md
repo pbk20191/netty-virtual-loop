@@ -8,14 +8,17 @@ and the pipeline API is unchanged. Built for brownfield Netty services where blo
 (JDBC, sync HTTP clients, `future.sync()`) are endemic and unmappable.
 
 Core mechanism: a virtual thread's Loom scheduler is just an `Executor`; pointing it at
-`SingleThreadIoEventLoop.execute` makes the loop thread the carrier. Reaching the private
-`ThreadBuilders$VirtualThreadBuilder.scheduler` field requires:
+`SingleThreadIoEventLoop.execute` makes the loop thread the carrier. The private Loom internals
+are reached through a trusted `MethodHandles.Lookup` with TWO strategies, tried in order:
 
-```
---add-opens=java.base/java.lang=ALL-UNNAMED
-```
+1. **Opened module** — active when the JVM was started with
+   `--add-opens=java.base/java.lang=ALL-UNNAMED` (the spec-clean path; recommended for
+   deployments that forbid `sun.misc.Unsafe`).
+2. **`sun.misc.Unsafe` fallback** — grabs the trusted `IMPL_LOOKUP`; works with **no JVM flags
+   at all**, but rides APIs deprecated for removal — when the JDK drops them, only (1) remains.
 
-Targets JDK 25+ **GA** (developed on 27-ea) — no `--enable-preview`. Netty 4.2.x.
+So the library runs flag-free out of the box, and hardens to the opened-module path when the
+flag is present. Targets JDK 25+ **GA** (developed on 27-ea) — no `--enable-preview`. Netty 4.2.x.
 
 ## How it differs from neighbours
 
@@ -144,9 +147,10 @@ or programmatically via `Recording.enable(name)`. Verified by `JfrEventsTest`.
 
 ## Known trade-offs
 
-- Rides JDK internals (`--add-opens`, the scheduler field, `runContinuation` stability) and Netty
-  4.2 internals — version-bump risk items. The JDK 27-preview `jdk.virtualThreadScheduler.implClass`
-  hook is the eventual migration path for the reflection layer.
+- Rides JDK internals (the scheduler field, `runContinuation` stability, trusted-lookup access)
+  and Netty 4.2 internals — version-bump risk items. The `sun.misc.Unsafe` fallback is deprecated
+  for removal; the JDK 27-preview `jdk.virtualThreadScheduler.implClass` hook (scaffolded in
+  `VirtualThreadTaskProxy.kt`) is the eventual migration path for the whole layer.
 - Carrier-pinning operations (file IO, JNI, DNS lookups) still stall the loop: Loom cannot park
   them and this scheduler has no compensation pool. Socket IO, sleeps, locks and monitors all park.
 - CPU-bound handler work hogs the carrier exactly as in stock Netty.

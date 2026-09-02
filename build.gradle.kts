@@ -31,8 +31,10 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
+    // --add-opens is NO LONGER REQUIRED: LookupUnsafe falls back to sun.misc.Unsafe when the
+    // module is not opened. Add "--add-opens=java.base/java.lang=ALL-UNNAMED" to prefer the
+    // spec-clean opened-module strategy (and to survive an eventual Unsafe removal).
     jvmArgs(
-        "--add-opens=java.base/java.lang=ALL-UNNAMED",
         // Track-and-report every ByteBuf: leak reports surface as "LEAK:" errors in test output.
         "-Dio.netty.leakDetection.level=paranoid",
     )
@@ -42,10 +44,9 @@ tasks.test {
     }
 }
 
-// Custom virtual-thread schedulers require reflective access to java.base internals
-// (ThreadBuilders$VirtualThreadBuilder.scheduler, VirtualThread.scheduler/carrierThread).
+// Custom virtual-thread schedulers reach java.base internals through LookupUnsafe: the
+// opened-module strategy when --add-opens is present, the sun.misc.Unsafe fallback otherwise.
 tasks.withType<JavaExec>().configureEach {
-    jvmArgs("--add-opens=java.base/java.lang=ALL-UNNAMED")
 }
 
 tasks.register<JavaExec>("runPingPong") {

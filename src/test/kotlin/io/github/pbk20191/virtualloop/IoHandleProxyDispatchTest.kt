@@ -57,7 +57,7 @@ class IoHandleProxyDispatchTest {
         val fake = FakeHandle()
         val queue = LinkedTransferQueue<Runnable>()
         val delegated = DelegatedHandle(fake, queue, AtomicReference())
-        val interfaces = InterfaceCache().get(fake.javaClass)
+        val interfaces = InterfaceCache.get(fake.javaClass)
         val proxy = Proxy.newProxyInstance(fake.javaClass.classLoader, interfaces, delegated) as IoHandle
 
         println("proxy interfaces: ${interfaces.map { it.simpleName }}")
@@ -97,20 +97,37 @@ internal class InterfaceMethodMapVarianceTest {
         override fun make(): String // covariant narrowing -> javac/kotlinc emits a bridge make():Object
     }
 
+    /** Same name+parameters as Canon.make but a return INCOMPATIBLE with it - must NOT map. */
+    interface ForeignReturn {
+        fun make(): Int
+    }
+
     internal object CanonMap : AbstractInterfaceMethodMap<Canon>() {
         override val clazz: Class<out Canon> = Canon::class.java
     }
 
     @Test
     fun bridgeAndSpecificMethodsBothMapToCanonical() {
-        val canonical = Canon::class.java.getMethod("make")
-        val mapped = CanonMap.get(Narrowed::class.java)
+        val mapped = CanonMap.get(Narrowed::class.java).interceptedHandles
         val makes = Narrowed::class.java.methods.filter { it.name == "make" }
         println("Narrowed.make variants: " + makes.map { "${it.returnType.simpleName}${if (it.isBridge) " (bridge)" else ""}" })
         check(makes.size == 2) { "expected specific+bridge, got $makes" }
-        makes.forEach { m ->
-            check(mapped[m] == canonical) { "variant $m not mapped to canonical" }
+        // The cached values are PRE-ADAPTED (receiver, Object[]) -> Object spreader handles
+        // (no longer crackable), so assert by BEHAVIOR: both variants dispatch to the impl.
+        val impl = object : Narrowed {
+            override fun make(): String = "ok"
         }
-        println("RESULT: covariant-return bridge and specific method both resolve to the canonical Method.")
+        makes.forEach { m ->
+            val handle = mapped[m] ?: error("variant $m not mapped to canonical")
+            check(handle.invoke(impl as Any, arrayOfNulls<Any>(0)) == "ok") { "variant $m misdispatched" }
+        }
+
+        // Return-compatibility gate: an unrelated same-signature method with an incompatible
+        // return (primitive int vs Object) stays OUT of the map - it belongs to the delegate.
+        val foreign = ForeignReturn::class.java.getMethod("make")
+        check(CanonMap.get(ForeignReturn::class.java).interceptedHandles[foreign] == null) {
+            "return-incompatible foreign method was misrouted to the wrapper"
+        }
+        println("RESULT: covariant-return bridge and specific method both resolve to the canonical Method; incompatible returns stay out.")
     }
 }

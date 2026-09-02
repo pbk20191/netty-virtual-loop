@@ -30,7 +30,7 @@ import kotlin.test.Test
 class SharedFtlTest {
     @Test
     fun oneMapPerLoopSharedAcrossTasksAndDrains() {
-        check(PrivateLoomSupport.isSupported) { "run with --add-opens=java.base/java.lang=ALL-UNNAMED" }
+        check(PrivateLoomSupport.isSupported) { "Loom internals unavailable (opened-module and Unsafe strategies both failed)" }
         check(SharedFtlSupport.isSupported) { "shared-FTL reflection unavailable" }
 
         val group = VirtualIoEventLoopGroup(nThreads = 1, sharedFastThreadLocals = true)

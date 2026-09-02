@@ -36,7 +36,7 @@ import kotlin.test.Test
 class OffloadExecutorTest {
     @Test
     fun blockingHandlerOnVanillaLoopViaOffloadGroup() {
-        check(PrivateLoomSupport.isSupported) { "run with --add-opens=java.base/java.lang=ALL-UNNAMED" }
+        check(PrivateLoomSupport.isSupported) { "Loom internals unavailable (opened-module and Unsafe strategies both failed)" }
 
         val vanilla = MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory())
         val offload = VirtualEventExecutorGroup()

@@ -9,8 +9,11 @@ services where blocking (JDBC, sync clients, `future.sync()`) is endemic and unm
 ## Build / run
 
 - JDK 25+ GA (Gradle toolchain 25; developed on 27-ea). Netty 4.2.x. Kotlin.
-- Every JVM that touches Loom internals needs `--add-opens=java.base/java.lang=ALL-UNNAMED`
-  (already wired into Gradle test/JavaExec tasks).
+- `--add-opens` is NO LONGER REQUIRED: `LookupUnsafe` provides a trusted lookup via two
+  strategies — (1) opened module when `--add-opens=java.base/java.lang=ALL-UNNAMED` is present,
+  (2) `sun.misc.Unsafe` IMPL_LOOKUP grab otherwise (deprecated-for-removal APIs; strategy 1 is
+  the survivor when the JDK drops them). All internals access goes through
+  `LookupUnsafe.lookupIn(target)` — never `.in()` on the opened lookup (teleports drop PRIVATE).
 - `./gradlew test` — the verification battery (real sockets, TLS, offload, JFR, contracts).
   Tests run with `-Dio.netty.leakDetection.level=paranoid`; a `LEAK:` line is a failure signal.
 - Benches: `runPingPong` / `runPingPongVanilla` / `runHandoff` / `runBench` / `runAlloc`.

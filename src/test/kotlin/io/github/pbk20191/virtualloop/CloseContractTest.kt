@@ -14,7 +14,7 @@ class CloseContractTest {
 
     @Test
     fun closeWaitsForInFlightWorkInsteadOfTruncatingAt100ms() {
-        check(PrivateLoomSupport.isSupported) { "run with --add-opens=java.base/java.lang=ALL-UNNAMED" }
+        check(PrivateLoomSupport.isSupported) { "Loom internals unavailable (opened-module and Unsafe strategies both failed)" }
         val group = VirtualIoEventLoopGroup(nThreads = 1)
         val loop = group.next()
         val completed = AtomicBoolean()
@@ -32,7 +32,7 @@ class CloseContractTest {
 
     @Test
     fun selfCloseFromLoopThreadsDoesNotDeadlock() {
-        check(PrivateLoomSupport.isSupported) { "run with --add-opens=java.base/java.lang=ALL-UNNAMED" }
+        check(PrivateLoomSupport.isSupported) { "Loom internals unavailable (opened-module and Unsafe strategies both failed)" }
         val group = VirtualIoEventLoopGroup(nThreads = 1)
         val loop = group.next() as VirtualIoEventLoop
 

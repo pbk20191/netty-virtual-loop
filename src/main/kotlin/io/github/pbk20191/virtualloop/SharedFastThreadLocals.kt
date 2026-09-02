@@ -5,8 +5,8 @@ import io.netty.util.concurrent.FastThreadLocal
 import io.netty.util.concurrent.FastThreadLocalThread
 import io.netty.util.internal.InternalThreadLocalMap
 import io.netty.util.internal.ThreadExecutorMap
-import java.lang.reflect.Constructor
-import java.lang.reflect.Method
+import java.lang.invoke.MethodHandle
+import java.lang.invoke.MethodType
 import java.util.concurrent.ForkJoinPool
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
@@ -40,36 +40,48 @@ import java.util.concurrent.atomic.AtomicReference
 //    id is registered in FastThreadLocalThread's fallback set (Recycler's gate) reflectively and
 //    unregistered WITHOUT removeAll; the map is cleaned exactly once at loop termination.
 
-/** Reflection bridge for the pieces Netty does not expose (see file doc). */
+/**
+ * Access bridge for the pieces Netty does not expose (see file doc), built on [LookupUnsafe]'s
+ * two-strategy trusted lookup: no setAccessible anywhere, so it works identically whether the
+ * JVM was opened with --add-opens or the Unsafe fallback carried the day.
+ */
 internal object SharedFtlSupport {
 
     private val failure: Throwable?
     private val slowThreadLocal: ThreadLocal<InternalThreadLocalMap>?
-    private val mapConstructor: Constructor<InternalThreadLocalMap>?
+    private val mapConstructor: MethodHandle?
     private val fallbackThreadsRef: AtomicReference<Any>?
-    private val fallbackAdd: Method?
-    private val fallbackRemove: Method?
+    private val fallbackAdd: MethodHandle?
+    private val fallbackRemove: MethodHandle?
 
     init {
         var failed: Throwable? = null
         var slow: ThreadLocal<InternalThreadLocalMap>? = null
-        var ctor: Constructor<InternalThreadLocalMap>? = null
+        var ctor: MethodHandle? = null
         var ref: AtomicReference<Any>? = null
-        var add: Method? = null
-        var remove: Method? = null
+        var add: MethodHandle? = null
+        var remove: MethodHandle? = null
         try {
-            // getDeclaredField, NOT getField: both members are private (getField sees public only).
+            val mapLookup = LookupUnsafe.lookupIn(InternalThreadLocalMap::class.java)
+            // getDeclaredField needs no opens (and the netty classes live in the open unnamed
+            // module anyway); the lookup replaces setAccessible for the actual access.
             @Suppress("UNCHECKED_CAST")
-            slow = InternalThreadLocalMap::class.java.getDeclaredField("slowThreadLocalMap")
-                .apply { isAccessible = true }.get(null) as ThreadLocal<InternalThreadLocalMap>
-            ctor = InternalThreadLocalMap::class.java.getDeclaredConstructor()
-                .apply { isAccessible = true }
+            slow = mapLookup.unreflectGetter(
+                InternalThreadLocalMap::class.java.getDeclaredField("slowThreadLocalMap"),
+            ).invoke() as ThreadLocal<InternalThreadLocalMap>
+            ctor = mapLookup.findConstructor(
+                InternalThreadLocalMap::class.java,
+                MethodType.methodType(Void.TYPE),
+            )
+            val threadLookup = LookupUnsafe.lookupIn(FastThreadLocalThread::class.java)
             @Suppress("UNCHECKED_CAST")
-            ref = FastThreadLocalThread::class.java.getDeclaredField("fallbackThreads")
-                .apply { isAccessible = true }.get(null) as AtomicReference<Any>
+            ref = threadLookup.unreflectGetter(
+                FastThreadLocalThread::class.java.getDeclaredField("fallbackThreads"),
+            ).invoke() as AtomicReference<Any>
             val setClass = ref.get().javaClass // FastThreadLocalThread.FallbackThreadSet (COW)
-            add = setClass.getDeclaredMethod("add", Long::class.javaPrimitiveType).apply { isAccessible = true }
-            remove = setClass.getDeclaredMethod("remove", Long::class.javaPrimitiveType).apply { isAccessible = true }
+            val setLookup = LookupUnsafe.lookupIn(setClass)
+            add = setLookup.unreflect(setClass.getDeclaredMethod("add", Long::class.javaPrimitiveType))
+            remove = setLookup.unreflect(setClass.getDeclaredMethod("remove", Long::class.javaPrimitiveType))
         } catch (t: Throwable) {
             failed = t
         }
@@ -83,7 +95,7 @@ internal object SharedFtlSupport {
 
     val isSupported: Boolean get() = failure == null
 
-    fun newMap(): InternalThreadLocalMap = mapConstructor!!.newInstance()
+    fun newMap(): InternalThreadLocalMap = mapConstructor!!.invoke() as InternalThreadLocalMap
 
     /** Binds [map] as the CURRENT thread's InternalThreadLocalMap (the non-FTLT slow path). */
     fun install(map: InternalThreadLocalMap) {

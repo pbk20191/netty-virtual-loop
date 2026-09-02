@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicReference
 class EchoTest {
     @Test
     fun blockingHandlerEchoesOverRealSocket() {
-        check(PrivateLoomSupport.isSupported) { "run with --add-opens=java.base/java.lang=ALL-UNNAMED" }
+        check(PrivateLoomSupport.isSupported) { "Loom internals unavailable (opened-module and Unsafe strategies both failed)" }
 
         val payload = "hello-from-loom-over-netty"
         val group = VirtualIoEventLoopGroup(nThreads = Runtime.getRuntime().availableProcessors())

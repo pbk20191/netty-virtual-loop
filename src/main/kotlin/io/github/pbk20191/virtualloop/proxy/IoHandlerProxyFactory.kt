@@ -8,7 +8,7 @@ internal class IoHandlerProxyFactory(
     private val delegate: IoHandlerFactory,
 ): IoHandlerFactory {
 
-    private val classCache = InterfaceCache()
+    private val classCache = InterfaceCache
 
 
 

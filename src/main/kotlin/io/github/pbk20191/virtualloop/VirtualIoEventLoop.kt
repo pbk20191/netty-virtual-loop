@@ -383,7 +383,7 @@ class VirtualIoEventLoop(
 
 
 
-    private val classCache = InterfaceCache()
+    private val classCache = InterfaceCache
 
 
     override fun register(handle: IoHandle): Future<IoRegistration> {

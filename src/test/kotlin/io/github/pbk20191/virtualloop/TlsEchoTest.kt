@@ -29,7 +29,7 @@ import kotlin.test.Test
 class TlsEchoTest {
     @Test
     fun tlsHandshakeAndEchoThroughBlockingHandler() {
-        check(PrivateLoomSupport.isSupported) { "run with --add-opens=java.base/java.lang=ALL-UNNAMED" }
+        check(PrivateLoomSupport.isSupported) { "Loom internals unavailable (opened-module and Unsafe strategies both failed)" }
 
         val cert = CertificateBuilder()
             .subject("CN=localhost")
