@@ -150,7 +150,7 @@ or programmatically via `Recording.enable(name)`. Verified by `JfrEventsTest`.
 - Rides JDK internals (the scheduler field, `runContinuation` stability, trusted-lookup access)
   and Netty 4.2 internals — version-bump risk items. The `sun.misc.Unsafe` fallback is deprecated
   for removal; the JDK 27-preview `jdk.virtualThreadScheduler.implClass` hook (scaffolded in
-  `VirtualThreadTaskProxy.kt`) is the eventual migration path for the whole layer.
+  `VirtualThreadBranchingSupport.kt`) is the eventual migration path for the whole layer.
 - Carrier-pinning operations (file IO, JNI, DNS lookups) still stall the loop: Loom cannot park
   them and this scheduler has no compensation pool. Socket IO, sleeps, locks and monitors all park.
 - CPU-bound handler work hogs the carrier exactly as in stock Netty.
