@@ -49,6 +49,13 @@ class VirtualIoEventLoop(
     private val group: IoEventLoopGroup,
     internal val carrier: SingleThreadIoEventLoop,
     sharedFastThreadLocals: Boolean = false,
+    /**
+     * Immutable ScopedValue bindings every VT this loop starts runs under (null = none). Loom does
+     * not inherit ScopedValues into fresh threads, so this is how request-scoped context reaches
+     * task VTs and IO drain VTs. Injected once at construction; build it with
+     * `ScopedValue.where(k, v).where(k2, v2)`.
+     */
+    private val scopeCarrier: ScopedValue.Carrier? = null,
 ) : AbstractExecutorService(), IoEventLoop {
 
     /** Loop-level FastThreadLocal sharing (opt-in); see SharedFastThreadLocals.kt for the model. */
@@ -155,25 +162,24 @@ class VirtualIoEventLoop(
         PrivateLoomSupport.setScheduler(builder, scheduler)
         val raw = builder.factory()
         val domain = ftlDomain
-        if (domain != null) {
-            // Shared-FTL mode: bind the loop's shared InternalThreadLocalMap as the first act of
-            // EVERY loop virtual thread. Deliberately NOT ThreadExecutorMap.apply here - the
-            // domain stamps currentExecutor ONCE into the shared map, and apply's finally would
-            // UNSET that shared slot at every task end, yanking it from under parked siblings.
+        val scope = scopeCarrier // both are immutable (ctor-injected), so the choice is made ONCE
+        // ZERO-OVERHEAD when neither feature is used: the raw factory, no wrapping lambda. Task VTs
+        // then stay UNREGISTERED in ThreadExecutorMap on purpose (a short-lived VT minting a private
+        // allocator cache is churn; long-lived DRAINs register in register()). Otherwise wrap the VT
+        // body: shared-FTL install (if enabled) as the FIRST act - deliberately NOT
+        // ThreadExecutorMap.apply, whose finally would UNSET the domain's once-stamped currentExecutor
+        // slot at every task end - then run the body under the loop's ScopedValue.Carrier if injected
+        // (Loom does not inherit ScopedValues into fresh threads, and this loop mints a VT per task
+        // and per IO event, so a bound tenant/trace id survives into handlers via key.get()).
+        if (domain == null && scope == null) {
+            raw
+        } else {
             java.util.concurrent.ThreadFactory { r ->
                 raw.newThread {
-                    domain.installOnCurrentThread()
-                    r.run()
+                    domain?.installOnCurrentThread()
+                    if (scope != null) scope.run(r) else r.run()
                 }
             }
-        } else {
-            // Task VTs stay UNREGISTERED in ThreadExecutorMap on purpose: currentExecutor() != null
-            // opens the allocators' per-THREAD cache gates, and a short-lived task VT would mint a
-            // private PoolThreadCache/magazine group for a handful of allocations and abandon it
-            // to the GC (no removeAll path) - pure churn. Long-lived DRAIN threads get the
-            // registration instead (see register()); loop-wide sharing is the
-            // sharedFastThreadLocals opt-in.
-            raw
         }
     }
 
@@ -572,7 +578,7 @@ class VirtualIoEventLoop(
         return promise
     }
 
-    @Deprecated("Deprecated in Netty", ReplaceWith("register(promise)"))
+    @Deprecated("Deprecated in Netty", ReplaceWith("register(channel)"))
     override fun register(channel: Channel, promise: ChannelPromise): ChannelFuture {
         channel.unsafe().register(this, promise)
         return promise

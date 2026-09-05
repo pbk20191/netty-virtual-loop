@@ -29,7 +29,7 @@ class EchoTest {
         check(PrivateLoomSupport.isSupported) { "Loom internals unavailable (opened-module and Unsafe strategies both failed)" }
 
         val payload = "hello-from-loom-over-netty"
-        val group = VirtualIoEventLoopGroup(nThreads = Runtime.getRuntime().availableProcessors())
+        val group = VirtualIoEventLoopGroup(nThreads = 4)
         val handlerThread = AtomicReference<String>()
         val handlerVirtual = AtomicReference<Boolean>(false)
         var clientCloseFuture: io.netty.channel.ChannelFuture? = null

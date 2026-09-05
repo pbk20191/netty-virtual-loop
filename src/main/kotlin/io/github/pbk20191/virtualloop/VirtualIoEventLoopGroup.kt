@@ -2,11 +2,17 @@ package io.github.pbk20191.virtualloop
 
 import io.netty.channel.*
 import io.netty.channel.nio.NioIoHandler
+import io.netty.util.collection.IntCollections
+import io.netty.util.collection.IntObjectHashMap
+import io.netty.util.collection.IntObjectMap
 import io.netty.util.concurrent.EventExecutor
 import io.netty.util.concurrent.EventExecutorChooserFactory
 import io.netty.util.concurrent.EventExecutorChooserFactory.EventExecutorChooser
+import io.netty.util.concurrent.EventExecutorGroup
 import io.netty.util.concurrent.Future
 import io.netty.util.concurrent.MultithreadEventExecutorGroup
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
@@ -34,11 +40,17 @@ class VirtualIoEventLoopGroup(
     private val carrier: MultiThreadIoEventLoopGroup,
     private val ownsCarrier: Boolean = true,
     sharedFastThreadLocals: Boolean = false,
+    /**
+     * Immutable ScopedValue bindings every child loop's VTs run under (null = none); see
+     * [VirtualIoEventLoop] scopeCarrier. Build it with `ScopedValue.where(k, v).where(k2, v2)`.
+     */
+    scopeCarrier: ScopedValue.Carrier? = null,
     counter: AtomicInteger = AtomicInteger(0),
     buffer: MutableList<IoEventLoop> = arrayListOf()
-    // The flag rides the super-ctor varargs because newChild runs from the SUPER constructor,
-    // before any field of this class is assigned (same trap as the carrier field, see newChild).
-) : MultithreadEventExecutorGroup(carrier.executorCount(), carrier, ChooserFactory(carrier), counter, buffer, sharedFastThreadLocals), IoEventLoopGroup {
+    // sharedFastThreadLocals and scopeCarrier ride the super-ctor varargs because newChild runs
+    // from the SUPER constructor, before any field of this class is assigned (same trap as the
+    // carrier field, see newChild).
+) : MultithreadEventExecutorGroup(carrier.executorCount(), carrier, ChooserFactory(carrier), counter, buffer, sharedFastThreadLocals, scopeCarrier), IoEventLoopGroup {
 
     constructor(
         nThreads: Int = 0,
@@ -46,14 +58,16 @@ class VirtualIoEventLoopGroup(
         ioHandlerFactory: IoHandlerFactory = NioIoHandler.newFactory(),
         chooserFactory: EventExecutorChooserFactory,
         sharedFastThreadLocals: Boolean = false,
-    ): this(MultiThreadIoEventLoopGroup(nThreads, executor, chooserFactory, ioHandlerFactory), sharedFastThreadLocals = sharedFastThreadLocals)
+        scopeCarrier: ScopedValue.Carrier? = null,
+    ): this(MultiThreadIoEventLoopGroup(nThreads, executor, chooserFactory, ioHandlerFactory), sharedFastThreadLocals = sharedFastThreadLocals, scopeCarrier = scopeCarrier)
 
     constructor(
         nThreads: Int = 0,
         threadFactory: ThreadFactory? = null,
         ioHandlerFactory: IoHandlerFactory = NioIoHandler.newFactory(),
         sharedFastThreadLocals: Boolean = false,
-    ): this(MultiThreadIoEventLoopGroup(nThreads, threadFactory, ioHandlerFactory), sharedFastThreadLocals = sharedFastThreadLocals)
+        scopeCarrier: ScopedValue.Carrier? = null,
+    ): this(MultiThreadIoEventLoopGroup(nThreads, threadFactory, ioHandlerFactory), sharedFastThreadLocals = sharedFastThreadLocals, scopeCarrier = scopeCarrier)
 
     private class ChooserFactory(
         val carrier: IoEventLoopGroup
@@ -63,18 +77,17 @@ class VirtualIoEventLoopGroup(
             // The children array is allocated as EventExecutor[] by MultithreadEventExecutorGroup,
             // so the ARRAY itself can never be cast to Array<VirtualIoEventLoop> (reified array
             // casts throw CCE); cast the elements instead.
-            val buffer = mutableMapOf<IoEventLoop, VirtualIoEventLoop>()
+            val buffer = IntObjectHashMap<VirtualIoEventLoop>(executor.size)
             for (event in executor) {
                 val loop = event as VirtualIoEventLoop
-                buffer[loop.carrier] = loop
+                buffer[System.identityHashCode(loop.carrier)] = loop
             }
-            return Chooser(carrier, buffer.toMap())
+            return Chooser(carrier, IntCollections.unmodifiableMap(buffer as IntObjectMap<EventExecutor>))
         }
 
-        private class Chooser(val carrier: IoEventLoopGroup, val map:Map<IoEventLoop, VirtualIoEventLoop>): EventExecutorChooser {
-            override fun next(): EventExecutor {
-               return map[carrier.next()]!!
-            }
+        private class Chooser(val carrier: EventExecutorGroup, val map: IntObjectMap<EventExecutor>): EventExecutorChooser {
+
+            override fun next(): EventExecutor = map.get(System.identityHashCode(carrier.next()))
 
         }
 
@@ -89,13 +102,14 @@ class VirtualIoEventLoopGroup(
         val counter = args[0] as AtomicInteger
         val buffer = args[1] as MutableList<IoEventLoop>
         val sharedFastThreadLocals = args.getOrNull(2) as? Boolean ?: false
+        val scopeCarrier = args.getOrNull(3) as? ScopedValue.Carrier
 
         val index = counter.getAndIncrement()
         if (index == 0) {
             buffer.addAll(carrier.iterator().asSequence().toList() as Collection<IoEventLoop>)
         }
         val single = buffer[index] as SingleThreadIoEventLoop
-        val loop = VirtualIoEventLoop(this, single, sharedFastThreadLocals)
+        val loop = VirtualIoEventLoop(this, single, sharedFastThreadLocals, scopeCarrier)
         return loop
     }
 
@@ -103,6 +117,7 @@ class VirtualIoEventLoopGroup(
         return super.next() as IoEventLoop
     }
 
+    @Deprecated("Deprecated in Java", ReplaceWith("register(channel)"))
     override fun register(
         channel: Channel,
         promise: ChannelPromise
@@ -128,6 +143,7 @@ class VirtualIoEventLoopGroup(
     }
 
 
+    @Deprecated("Deprecated in Java")
     override fun shutdown() {
         @Suppress("DEPRECATION")
         super.shutdown()
